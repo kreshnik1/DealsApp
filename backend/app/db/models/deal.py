@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -9,12 +9,12 @@ from app.db.base import Base
 class Deal(Base):
     __tablename__ = "deals"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    store_id: Mapped[int] = mapped_column(Integer, ForeignKey("stores.id"), nullable=False)
-    chain: Mapped[str] = mapped_column(String(50), nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"), index=True)
+    chain: Mapped[str] = mapped_column(String(50), index=True)
     external_id: Mapped[str | None] = mapped_column(String(200))
 
-    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    name: Mapped[str] = mapped_column(String(500))
     brand: Mapped[str | None] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(255))
@@ -25,9 +25,9 @@ class Deal(Base):
     price_label: Mapped[str | None] = mapped_column(String(200))
     comparison_price: Mapped[str | None] = mapped_column(String(100))
 
-    valid_from: Mapped[datetime | None] = mapped_column(DateTime)
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime)
-    scraped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    valid_from: Mapped[datetime | None] = mapped_column()
+    valid_to: Mapped[datetime | None] = mapped_column()
+    scraped_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     source_url: Mapped[str | None] = mapped_column(String(1000))
 
-    store: Mapped["Store"] = relationship("Store", back_populates="deals")
+    store: Mapped["Store"] = relationship(back_populates="deals")

@@ -1,10 +1,30 @@
+import logging
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.db.models import Company, Deal, Product, Store  # noqa: F401 — ensure models are registered
-from app.routers import deals, scrape, stores
+from app.config import settings
+from app.db.models import Company, Deal, Product, Role, Store, StoreDetail, User  # noqa: F401
+from app.routers import auth, deals, scrape, stores
 
-app = FastAPI(title="DealsApp")
+logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)s — %(message)s")
 
+app = FastAPI(title="DealsApp", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth.router)
 app.include_router(deals.router)
 app.include_router(stores.router)
 app.include_router(scrape.router)
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}

@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("name"),
         sa.UniqueConstraint("slug"),
     )
-    op.create_index(op.f("ix_companies_id"), "companies", ["id"], unique=False)
+    op.create_index(op.f("ix_companies_id"), "companies", ["id"])
 
     op.create_table(
         "stores",
@@ -40,7 +40,30 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("external_id"),
     )
-    op.create_index(op.f("ix_stores_id"), "stores", ["id"], unique=False)
+    op.create_index(op.f("ix_stores_id"), "stores", ["id"])
+
+    op.create_table(
+        "store_details",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("store_id", sa.Integer(), nullable=False),
+        sa.Column("about_url", sa.String(length=1000), nullable=True),
+        sa.Column("address", sa.String(length=500), nullable=True),
+        sa.Column("postal_code", sa.String(length=20), nullable=True),
+        sa.Column("city", sa.String(length=255), nullable=True),
+        sa.Column("phone", sa.String(length=50), nullable=True),
+        sa.Column("google_maps_url", sa.String(length=1000), nullable=True),
+        sa.Column("latitude", sa.Float(), nullable=True),
+        sa.Column("longitude", sa.Float(), nullable=True),
+        sa.Column("opening_hours", sa.Text(), nullable=True),
+        sa.Column("special_hours", sa.Text(), nullable=True),
+        sa.Column("scraped_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(["store_id"], ["stores.id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("store_id"),
+    )
+    op.create_index(op.f("ix_store_details_id"), "store_details", ["id"])
+    op.create_index(op.f("ix_store_details_store_id"), "store_details", ["store_id"])
 
     op.create_table(
         "deals",
@@ -64,7 +87,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["store_id"], ["stores.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_deals_id"), "deals", ["id"], unique=False)
+    op.create_index(op.f("ix_deals_id"), "deals", ["id"])
 
     op.create_table(
         "products",
@@ -87,7 +110,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("external_id"),
     )
-    op.create_index(op.f("ix_products_id"), "products", ["id"], unique=False)
+    op.create_index(op.f("ix_products_id"), "products", ["id"])
 
 
 def downgrade() -> None:
@@ -95,6 +118,9 @@ def downgrade() -> None:
     op.drop_table("products")
     op.drop_index(op.f("ix_deals_id"), table_name="deals")
     op.drop_table("deals")
+    op.drop_index(op.f("ix_store_details_store_id"), table_name="store_details")
+    op.drop_index(op.f("ix_store_details_id"), table_name="store_details")
+    op.drop_table("store_details")
     op.drop_index(op.f("ix_stores_id"), table_name="stores")
     op.drop_table("stores")
     op.drop_index(op.f("ix_companies_id"), table_name="companies")
