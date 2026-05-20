@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -12,18 +12,22 @@ class Deal(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"), index=True)
     chain: Mapped[str] = mapped_column(String(50), index=True)
-    external_id: Mapped[str | None] = mapped_column(String(200))
+    external_id: Mapped[str | None] = mapped_column(String(200), unique=True)
 
     name: Mapped[str] = mapped_column(String(500))
     brand: Mapped[str | None] = mapped_column(String(255))
+    size: Mapped[str | None] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(255))
     image_url: Mapped[str | None] = mapped_column(String(1000))
 
     original_price: Mapped[float | None] = mapped_column(Float)
     deal_price: Mapped[float | None] = mapped_column(Float)
+    deal_text: Mapped[str | None] = mapped_column(String(255))
     price_label: Mapped[str | None] = mapped_column(String(200))
-    comparison_price: Mapped[str | None] = mapped_column(String(100))
+    is_membership_price: Mapped[bool] = mapped_column(Boolean, default=False)
+    comparison_price: Mapped[str | None] = mapped_column(String(255))
+    extra_info: Mapped[str | None] = mapped_column(Text)
 
     valid_from: Mapped[datetime | None] = mapped_column()
     valid_to: Mapped[datetime | None] = mapped_column()

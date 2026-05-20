@@ -73,21 +73,42 @@ def upgrade() -> None:
         sa.Column("external_id", sa.String(length=200), nullable=True),
         sa.Column("name", sa.String(length=500), nullable=False),
         sa.Column("brand", sa.String(length=255), nullable=True),
+        sa.Column("size", sa.String(length=100), nullable=True),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("category", sa.String(length=255), nullable=True),
         sa.Column("image_url", sa.String(length=1000), nullable=True),
         sa.Column("original_price", sa.Float(), nullable=True),
         sa.Column("deal_price", sa.Float(), nullable=True),
+        sa.Column("deal_text", sa.String(length=255), nullable=True),
         sa.Column("price_label", sa.String(length=200), nullable=True),
-        sa.Column("comparison_price", sa.String(length=100), nullable=True),
+        sa.Column("is_membership_price", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("comparison_price", sa.String(length=255), nullable=True),
+        sa.Column("extra_info", sa.Text(), nullable=True),
         sa.Column("valid_from", sa.DateTime(), nullable=True),
         sa.Column("valid_to", sa.DateTime(), nullable=True),
         sa.Column("scraped_at", sa.DateTime(), nullable=False),
         sa.Column("source_url", sa.String(length=1000), nullable=True),
         sa.ForeignKeyConstraint(["store_id"], ["stores.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("external_id"),
     )
     op.create_index(op.f("ix_deals_id"), "deals", ["id"])
+
+    op.create_table(
+        "flyers",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("store_id", sa.Integer(), nullable=False),
+        sa.Column("url", sa.String(length=1000), nullable=False),
+        sa.Column("pdf_path", sa.String(length=1000), nullable=True),
+        sa.Column("file_size", sa.BigInteger(), nullable=True),
+        sa.Column("valid_from", sa.DateTime(), nullable=True),
+        sa.Column("valid_to", sa.DateTime(), nullable=True),
+        sa.Column("scraped_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(["store_id"], ["stores.id"]),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_flyers_id"), "flyers", ["id"])
+    op.create_index(op.f("ix_flyers_store_id"), "flyers", ["store_id"])
 
     op.create_table(
         "products",
@@ -116,6 +137,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(op.f("ix_products_id"), table_name="products")
     op.drop_table("products")
+    op.drop_index(op.f("ix_flyers_store_id"), table_name="flyers")
+    op.drop_index(op.f("ix_flyers_id"), table_name="flyers")
+    op.drop_table("flyers")
     op.drop_index(op.f("ix_deals_id"), table_name="deals")
     op.drop_table("deals")
     op.drop_index(op.f("ix_store_details_store_id"), table_name="store_details")

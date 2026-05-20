@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urljoin
 from xml.etree import ElementTree
 
@@ -16,7 +18,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, Product, Store
+from app.db.models import Company, Deal, Flyer, Store
 from app.db.models.store_detail import StoreDetail
 from app.dependencies import get_or_create_company
 
@@ -28,6 +30,9 @@ COOP_SITEMAP_URL = "https://www.coop.se/sitemap_pages.xml"
 COOP_STORE_PREFIX = "https://www.coop.se/butiker-erbjudanden/"
 
 MAX_CONCURRENT_REQUESTS = 15
+
+FLYER_DIR = Path(os.environ.get("FLYER_DIR", "data/flyers"))
+FLYER_DIR.mkdir(parents=True, exist_ok=True)
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -433,10 +438,10 @@ def _geocode(info: dict, about_url: str = "", store_name: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Products: public API
+# Deals: public API
 # ---------------------------------------------------------------------------
 
-def scrape_first_store_products(db: Session) -> dict:
+def scrape_first_store_deals(db: Session) -> dict:
     store = (
         db.query(Store)
         .join(Company)
@@ -447,17 +452,24 @@ def scrape_first_store_products(db: Session) -> dict:
     if store is None or not store.store_url:
         raise ValueError("No Coop store with store_url found")
 
-    parsed = _fetch_and_parse_store_products(store.store_url)
-    created = _save_products(db, store, parsed)
+    parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
+    created = _save_deals(db, store, parsed)
+
+    pdf_path, file_size = None, None
+    if flyer_url and store.external_id:
+        pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
+    _save_flyer(db, store, flyer_url, pdf_path, file_size)
+
     return {
         "store_id": store.id,
         "store_name": store.name,
-        "products_found": len(parsed),
-        "products_created": created,
+        "deals_found": len(parsed),
+        "deals_created": created,
+        "flyer_url": flyer_url,
     }
 
 
-def scrape_company_store_products(db: Session, company_id: int) -> dict:
+def scrape_company_store_deals(db: Session, company_id: int) -> dict:
     company = db.query(Company).filter(Company.id == company_id).first()
     if company is None:
         raise ValueError(f"Company {company_id} not found")
@@ -468,26 +480,37 @@ def scrape_company_store_products(db: Session, company_id: int) -> dict:
         "company_id": company.id,
         "company_name": company.name,
         "stores_checked": 0,
-        "stores_with_products": 0,
-        "products_found": 0,
-        "products_created": 0,
+        "stores_with_deals": 0,
+        "deals_found": 0,
+        "deals_created": 0,
+        "flyers_downloaded": 0,
     }
 
     for store in stores:
         if not store.store_url:
             continue
         totals["stores_checked"] += 1
-        parsed = _fetch_and_parse_store_products(store.store_url)
+        try:
+            parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
+        except Exception as exc:
+            log.error("Failed to scrape deals for store '%s' (id=%d): %s", store.name, store.id, exc)
+            continue
         if not parsed:
             continue
-        totals["stores_with_products"] += 1
-        totals["products_found"] += len(parsed)
-        totals["products_created"] += _save_products(db, store, parsed)
+        totals["stores_with_deals"] += 1
+        totals["deals_found"] += len(parsed)
+        totals["deals_created"] += _save_deals(db, store, parsed)
+
+        if flyer_url and store.external_id:
+            pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
+            _save_flyer(db, store, flyer_url, pdf_path, file_size)
+            if pdf_path:
+                totals["flyers_downloaded"] += 1
 
     return totals
 
 
-def scrape_store_products(db: Session, company_id: int, store_id: int) -> dict:
+def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
     company = db.query(Company).filter(Company.id == company_id).first()
     if company is None:
         raise ValueError(f"Company {company_id} not found")
@@ -498,15 +521,22 @@ def scrape_store_products(db: Session, company_id: int, store_id: int) -> dict:
     if not store.store_url:
         raise ValueError(f"Store {store_id} has no store_url")
 
-    parsed = _fetch_and_parse_store_products(store.store_url)
-    created = _save_products(db, store, parsed)
+    parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
+    created = _save_deals(db, store, parsed)
+
+    pdf_path, file_size = None, None
+    if flyer_url and store.external_id:
+        pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
+    _save_flyer(db, store, flyer_url, pdf_path, file_size)
+
     return {
         "company_id": company.id,
         "company_name": company.name,
         "store_id": store.id,
         "store_name": store.name,
-        "products_found": len(parsed),
-        "products_created": created,
+        "deals_found": len(parsed),
+        "deals_created": created,
+        "flyer_url": flyer_url,
     }
 
 
@@ -530,19 +560,21 @@ def _store_external_id(concept: str, slug: str) -> str:
     return f"{COMPANY_SLUG}:{concept}:{slug}"
 
 
-def _product_external_id(source_url: str, name: str, brand: str | None, size: str | None, deal_text: str | None) -> str:
+def _deal_external_id(source_url: str, name: str, brand: str | None, size: str | None, deal_text: str | None) -> str:
     raw = "|".join([source_url, name, brand or "", size or "", deal_text or ""])
     digest = hashlib.sha1(raw.encode()).hexdigest()
-    return f"{COMPANY_SLUG}:product:{digest}"
+    return f"{COMPANY_SLUG}:deal:{digest}"
 
 
 # ---------------------------------------------------------------------------
-# Products: HTML fetch
+# Deals: HTML fetch
 # ---------------------------------------------------------------------------
 
-def _fetch_and_parse_store_products(store_url: str) -> list[dict]:
+def _fetch_and_parse_store_deals(store_url: str) -> tuple[list[dict], str | None]:
     html = _fetch_store_html(store_url)
-    return _parse_products_from_html(html, store_url)
+    deals = _parse_products_from_html(html, store_url)
+    flyer_url = _extract_flyer_url(html)
+    return deals, flyer_url
 
 
 def _fetch_store_html(store_url: str) -> str:
@@ -616,7 +648,7 @@ def _html_has_product_cards(html: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Products: HTML parsing
+# Deals: HTML parsing
 # ---------------------------------------------------------------------------
 
 def _parse_products_from_html(html: str, source_url: str) -> list[dict]:
@@ -662,7 +694,7 @@ def _parse_products_from_html(html: str, source_url: str) -> list[dict]:
             comparison_price = _extract_comparison_price_from_aria(aria_label)
 
         items.append({
-            "external_id": _product_external_id(source_url, name, brand, size, deal_text),
+            "external_id": _deal_external_id(source_url, name, brand, size, deal_text),
             "name": name,
             "brand": brand,
             "size": size,
@@ -759,46 +791,97 @@ def _looks_like_comparison_price(value: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Products: DB persistence
+# Deals: DB persistence
 # ---------------------------------------------------------------------------
 
-def _save_products(db: Session, store: Store, parsed: list[dict]) -> int:
+def _save_deals(db: Session, store: Store, parsed: list[dict]) -> int:
     parsed = _dedupe(parsed)
     if not parsed:
         return 0
 
     ext_ids = [p["external_id"] for p in parsed if p["external_id"]]
     existing = {
-        p.external_id: p
-        for p in db.query(Product).filter(Product.external_id.in_(ext_ids)).all()
+        d.external_id: d
+        for d in db.query(Deal).filter(Deal.external_id.in_(ext_ids)).all()
     } if ext_ids else {}
 
     now = datetime.now(timezone.utc)
     created = 0
 
     for item in parsed:
-        product = existing.get(item["external_id"])
-        if product is None:
-            product = Product(store_id=store.id, external_id=item["external_id"], name=item["name"])
-            db.add(product)
+        deal = existing.get(item["external_id"])
+        if deal is None:
+            deal = Deal(store_id=store.id, chain=store.chain, external_id=item["external_id"], name=item["name"])
+            db.add(deal)
             created += 1
 
-        product.store_id = store.id
-        product.name = item["name"]
-        product.brand = item["brand"]
-        product.size = item["size"]
-        product.description = item["description"]
-        product.image_url = item["image_url"]
-        product.price_label = item["price_label"]
-        product.is_membership_price = bool(item["is_membership_price"])
-        product.deal_text = item["deal_text"]
-        product.comparison_price = item["comparison_price"]
-        product.extra_info = item["extra_info"]
-        product.source_url = store.store_url
-        product.scraped_at = now
+        deal.store_id = store.id
+        deal.chain = store.chain
+        deal.name = item["name"]
+        deal.brand = item["brand"]
+        deal.size = item["size"]
+        deal.description = item["description"]
+        deal.image_url = item["image_url"]
+        deal.price_label = item["price_label"]
+        deal.is_membership_price = bool(item["is_membership_price"])
+        deal.deal_text = item["deal_text"]
+        deal.comparison_price = item["comparison_price"]
+        deal.extra_info = item["extra_info"]
+        deal.source_url = store.store_url
+        deal.scraped_at = now
 
     db.commit()
     return created
+
+
+def _extract_flyer_url(html: str) -> str | None:
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = (a.get_text(strip=True) or "").lower()
+        if "dr.coop.se" in href:
+            return href
+        if any(kw in text for kw in ["öppna pdf", "reklamblad", "veckoblad"]):
+            return href
+    return None
+
+
+def _download_flyer(flyer_url: str, store_external_id: str) -> tuple[str | None, int | None]:
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", store_external_id)
+    dest = FLYER_DIR / f"{safe_name}.pdf"
+    try:
+        resp = httpx.get(flyer_url, timeout=60.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        resp.raise_for_status()
+        dest.write_bytes(resp.content)
+        file_size = len(resp.content)
+        log.info("Flyer saved: %s (%d bytes)", dest, file_size)
+        return str(dest), file_size
+    except Exception as exc:
+        log.error("Failed to download flyer from %s: %s", flyer_url, exc)
+        return None, None
+
+
+def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str | None, file_size: int | None) -> bool:
+    if not flyer_url:
+        return False
+
+    existing = db.query(Flyer).filter(Flyer.store_id == store.id, Flyer.url == flyer_url).first()
+    if existing:
+        if pdf_path and not existing.pdf_path:
+            existing.pdf_path = pdf_path
+            existing.file_size = file_size
+            db.commit()
+        return False
+
+    flyer = Flyer(
+        store_id=store.id,
+        url=flyer_url,
+        pdf_path=pdf_path,
+        file_size=file_size,
+    )
+    db.add(flyer)
+    db.commit()
+    return True
 
 
 def _dedupe(items: list[dict]) -> list[dict]:

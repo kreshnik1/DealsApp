@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.db.models import Company, Deal, Product, Role, Store, StoreDetail, User  # noqa: F401
+from app.db.models import Company, Deal, Flyer, Product, Role, Store, StoreDetail, User  # noqa: F401
 from app.routers import auth, deals, scrape, stores
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)s — %(message)s")

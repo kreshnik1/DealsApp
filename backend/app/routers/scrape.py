@@ -55,13 +55,13 @@ def scrape_store_info(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/coop/products/first-store")
-def scrape_first_coop_store_products(
+@router.post("/coop/deals/first-store")
+def scrape_first_coop_store_deals(
     db: Session = Depends(get_db),
     _admin: User = Depends(get_admin_user),
 ):
     try:
-        return coop.scrape_first_store_products(db)
+        return coop.scrape_first_store_deals(db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -95,7 +95,7 @@ def scrape_company_deals(
     if scraper is None:
         raise HTTPException(status_code=400, detail=f"No scraper available for '{company_slug}'")
     try:
-        return scraper.scrape_company_store_products(db, company.id)
+        return scraper.scrape_company_store_deals(db, company.id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -112,7 +112,7 @@ def scrape_store_deals(
     if scraper is None:
         raise HTTPException(status_code=400, detail=f"No scraper available for '{company_slug}'")
     try:
-        return scraper.scrape_store_products(db, company.id, store_id)
+        return scraper.scrape_store_deals(db, company.id, store_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

@@ -18,4 +18,5 @@ class Store(Base):
     company: Mapped["Company"] = relationship(back_populates="stores")
     deals: Mapped[list["Deal"]] = relationship(back_populates="store")
     products: Mapped[list["Product"]] = relationship(back_populates="store")
+    flyers: Mapped[list["Flyer"]] = relationship(back_populates="store")
     detail: Mapped["StoreDetail | None"] = relationship(back_populates="store", uselist=False)
