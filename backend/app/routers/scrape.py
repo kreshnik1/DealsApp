@@ -8,12 +8,13 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.dependencies import get_company_by_slug
 from app.schemas.store import CoopStoreLinkOut
-from app.scrapers import coop, willys
+from app.scrapers import coop, ica, willys
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
 
 SCRAPER_REGISTRY = {
     "coop": coop,
+    "ica": ica,
 }
 
 
@@ -35,6 +36,26 @@ def scrape_coop_store_links(
         .scalar()
     )
     return {"company": "Coop", "stores_created": created, "total_stores": total}
+
+
+@router.get("/ica/stores")
+def scrape_ica_store_links(
+    save: bool = Query(True, description="Persist ICA stores into the database"),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_admin_user),
+):
+    if not save:
+        stores = ica.discover_store_links()
+        return [{"name": s.name, "chain": s.chain, "store_id": s.store_id, "store_url": s.store_url} for s in stores]
+
+    created = ica.save_store_links(db)
+    total = (
+        db.query(func.count(Store.id))
+        .join(Company)
+        .filter(Company.slug == "ica")
+        .scalar()
+    )
+    return {"company": "ICA", "stores_created": created, "total_stores": total}
 
 
 @router.get("/{company_slug}/store-info")
