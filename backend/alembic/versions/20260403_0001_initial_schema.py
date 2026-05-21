@@ -101,6 +101,7 @@ def upgrade() -> None:
         sa.Column("url", sa.String(length=1000), nullable=False),
         sa.Column("pdf_path", sa.String(length=1000), nullable=True),
         sa.Column("file_size", sa.BigInteger(), nullable=True),
+        sa.Column("week_number", sa.SmallInteger(), nullable=True),
         sa.Column("valid_from", sa.DateTime(), nullable=True),
         sa.Column("valid_to", sa.DateTime(), nullable=True),
         sa.Column("scraped_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),

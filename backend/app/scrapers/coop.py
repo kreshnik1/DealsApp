@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -384,13 +385,53 @@ def _parse_opening_hours(soup, info: dict) -> None:
                 if day_el and time_el:
                     day = day_el.get_text(strip=True)
                     time_val = time_el.get_text(strip=True)
-                    target.append(f"{day}: {time_val}")
+                    target.append(_parse_hours_entry(day, time_val))
 
         if regular:
-            info["opening_hours"] = " | ".join(regular)
+            info["opening_hours"] = json.dumps(regular, ensure_ascii=False)
         if special:
-            info["special_hours"] = " | ".join(special)
+            info["special_hours"] = json.dumps(special, ensure_ascii=False)
         break
+
+
+SWEDISH_DAYS = ["Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag", "Söndag"]
+DAY_INDEX = {d.lower(): i for i, d in enumerate(SWEDISH_DAYS)}
+
+
+def _parse_hours_entry(day_text: str, time_text: str) -> dict:
+    time_text = time_text.replace("–", "-").replace("—", "-").strip()
+    open_time, close_time = None, None
+    if time_text.lower() == "stängt":
+        open_time = None
+        close_time = None
+    elif "-" in time_text:
+        parts = time_text.split("-", 1)
+        open_time = _normalize_time(parts[0].strip())
+        close_time = _normalize_time(parts[1].strip())
+
+    day_text = day_text.replace("–", "-").replace("—", "-").strip()
+    if "-" in day_text:
+        start_day, end_day = day_text.split("-", 1)
+        start_idx = DAY_INDEX.get(start_day.strip().lower())
+        end_idx = DAY_INDEX.get(end_day.strip().lower())
+        if start_idx is not None and end_idx is not None:
+            days = []
+            i = start_idx
+            while True:
+                days.append(SWEDISH_DAYS[i])
+                if i == end_idx:
+                    break
+                i = (i + 1) % 7
+            return {"days": days, "open": open_time, "close": close_time}
+
+    return {"days": [day_text], "open": open_time, "close": close_time}
+
+
+def _normalize_time(val: str) -> str:
+    val = val.strip().replace(".", ":")
+    if ":" in val:
+        return val.zfill(5)
+    return f"{val.zfill(2)}:00"
 
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -452,13 +493,13 @@ def scrape_first_store_deals(db: Session) -> dict:
     if store is None or not store.store_url:
         raise ValueError("No Coop store with store_url found")
 
-    parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
+    parsed, flyer_url, week_number = _fetch_and_parse_store_deals(store.store_url)
     created = _save_deals(db, store, parsed)
 
     pdf_path, file_size = None, None
     if flyer_url and store.external_id:
         pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
-    _save_flyer(db, store, flyer_url, pdf_path, file_size)
+    _save_flyer(db, store, flyer_url, pdf_path, file_size, week_number)
 
     return {
         "store_id": store.id,
@@ -466,6 +507,7 @@ def scrape_first_store_deals(db: Session) -> dict:
         "deals_found": len(parsed),
         "deals_created": created,
         "flyer_url": flyer_url,
+        "week_number": week_number,
     }
 
 
@@ -486,26 +528,32 @@ def scrape_company_store_deals(db: Session, company_id: int) -> dict:
         "flyers_downloaded": 0,
     }
 
-    for store in stores:
-        if not store.store_url:
-            continue
-        totals["stores_checked"] += 1
-        try:
-            parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
-        except Exception as exc:
-            log.error("Failed to scrape deals for store '%s' (id=%d): %s", store.name, store.id, exc)
-            continue
-        if not parsed:
-            continue
-        totals["stores_with_deals"] += 1
-        totals["deals_found"] += len(parsed)
-        totals["deals_created"] += _save_deals(db, store, parsed)
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(headless=True)
+    try:
+        for store in stores:
+            if not store.store_url:
+                continue
+            totals["stores_checked"] += 1
+            try:
+                parsed, flyer_url, week_number = _fetch_and_parse_store_deals(store.store_url, browser)
+            except Exception as exc:
+                log.error("Failed to scrape deals for store '%s' (id=%d): %s", store.name, store.id, exc)
+                continue
+            if not parsed:
+                continue
+            totals["stores_with_deals"] += 1
+            totals["deals_found"] += len(parsed)
+            totals["deals_created"] += _save_deals(db, store, parsed)
 
-        if flyer_url and store.external_id:
-            pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
-            _save_flyer(db, store, flyer_url, pdf_path, file_size)
-            if pdf_path:
-                totals["flyers_downloaded"] += 1
+            if flyer_url and store.external_id:
+                pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
+                _save_flyer(db, store, flyer_url, pdf_path, file_size, week_number)
+                if pdf_path:
+                    totals["flyers_downloaded"] += 1
+    finally:
+        browser.close()
+        pw.stop()
 
     return totals
 
@@ -521,13 +569,13 @@ def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
     if not store.store_url:
         raise ValueError(f"Store {store_id} has no store_url")
 
-    parsed, flyer_url = _fetch_and_parse_store_deals(store.store_url)
+    parsed, flyer_url, week_number = _fetch_and_parse_store_deals(store.store_url)
     created = _save_deals(db, store, parsed)
 
     pdf_path, file_size = None, None
     if flyer_url and store.external_id:
         pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
-    _save_flyer(db, store, flyer_url, pdf_path, file_size)
+    _save_flyer(db, store, flyer_url, pdf_path, file_size, week_number)
 
     return {
         "company_id": company.id,
@@ -537,6 +585,7 @@ def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
         "deals_found": len(parsed),
         "deals_created": created,
         "flyer_url": flyer_url,
+        "week_number": week_number,
     }
 
 
@@ -570,47 +619,60 @@ def _deal_external_id(source_url: str, name: str, brand: str | None, size: str |
 # Deals: HTML fetch
 # ---------------------------------------------------------------------------
 
-def _fetch_and_parse_store_deals(store_url: str) -> tuple[list[dict], str | None]:
-    html = _fetch_store_html(store_url)
+def _fetch_and_parse_store_deals(store_url: str, browser=None) -> tuple[list[dict], str | None, int | None]:
+    html = _fetch_store_html_with_browser(store_url, browser)
     deals = _parse_products_from_html(html, store_url)
     flyer_url = _extract_flyer_url(html)
-    return deals, flyer_url
+    week_number = _extract_week_number(html)
+    return deals, flyer_url, week_number
 
 
-def _fetch_store_html(store_url: str) -> str:
-    response = httpx.get(store_url, timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
-    response.raise_for_status()
-    html = response.text
-    if _html_has_product_cards(html) and not _html_has_offer_dialogs(html):
-        return html
-    return _fetch_store_html_with_browser(store_url)
+def _fetch_store_html_with_browser(store_url: str, browser=None) -> str:
+    own_browser = browser is None
+    pw_instance = None
+    if own_browser:
+        pw_instance = sync_playwright().start()
+        browser = pw_instance.chromium.launch(headless=True)
 
-
-def _fetch_store_html_with_browser(store_url: str) -> str:
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=USER_AGENT)
+    page = browser.new_page(user_agent=USER_AGENT)
+    try:
+        page.goto(store_url, wait_until="domcontentloaded", timeout=60_000)
         try:
-            page.goto(store_url, wait_until="domcontentloaded", timeout=60_000)
-            try:
-                page.wait_for_selector("li.Grid-cell article, article.ohKiwh8z", timeout=12_000)
-            except PlaywrightTimeoutError:
-                pass
+            page.wait_for_selector("li.Grid-cell article, article.ohKiwh8z", timeout=12_000)
+        except PlaywrightTimeoutError:
+            pass
+
+        dialog_html = ""
+        try:
+            page.wait_for_selector(
+                "button:has-text('varor'), button:has-text('items')",
+                timeout=3_000,
+            )
             dialog_html = _collect_offer_dialog_html(page)
-            page.wait_for_timeout(1_500)
-            return page.content() + "\n" + dialog_html
-        finally:
-            page.close()
+        except PlaywrightTimeoutError:
+            pass
+
+        html = page.content()
+        if dialog_html:
+            html = html.replace("</body>", dialog_html + "\n</body>")
+        return html
+    finally:
+        page.close()
+        if own_browser:
             browser.close()
+            pw_instance.stop()
 
 
 def _collect_offer_dialog_html(page) -> str:
     fragments: list[str] = []
     buttons = page.locator("button").filter(
-        has_text=re.compile(r"^(See|Se)\s+\d+\s+(items|varor)$", re.IGNORECASE)
+        has_text=re.compile(r"(See|Se)\s+\d+\s+(items|varor)", re.IGNORECASE)
     )
 
-    for i in range(buttons.count()):
+    count = buttons.count()
+    log.info("Found %d 'Se varor' dialog buttons", count)
+
+    for i in range(count):
         button = buttons.nth(i)
         label = _clean(button.text_content() or "")
         if not _is_offer_dialog_button(label):
@@ -619,32 +681,26 @@ def _collect_offer_dialog_html(page) -> str:
             button.scroll_into_view_if_needed(timeout=3_000)
             button.evaluate("el => el.click()")
             page.wait_for_selector(
-                "div._111YdG_DialogContainer h1, div._111YdG_DialogContainer article.ohKiwh8z",
-                timeout=6_000,
+                "div._111YdG_DialogContainer article.ohKiwh8z",
+                timeout=5_000,
             )
             dialog = page.locator("div._111YdG_DialogContainer").last
-            fragments.append(dialog.inner_html(timeout=3_000))
-            dialog.locator("button.CM0Nmq_Button--icon").first.click(timeout=5_000, force=True)
-            page.wait_for_timeout(150)
-        except (PlaywrightTimeoutError, Exception):
+            html = dialog.inner_html(timeout=3_000)
+            fragments.append(html)
+            log.info("Collected dialog '%s' (%d chars)", label, len(html))
+            dialog.locator("button.CM0Nmq_Button--icon").first.click(timeout=3_000, force=True)
+            page.wait_for_timeout(200)
+        except Exception as exc:
+            log.warning("Failed to collect dialog '%s': %s", label, exc)
             continue
 
+    log.info("Collected %d dialog fragments", len(fragments))
     return "\n".join(fragments)
 
 
 def _is_offer_dialog_button(label: str) -> bool:
     low = label.lower()
     return any(t in low for t in ["see ", "se "]) and any(t in low for t in [" items", " varor"])
-
-
-def _html_has_offer_dialogs(html: str) -> bool:
-    markers = ("See 2 items", "See 3 items", "See 4 items", "Se 2 varor", "Se 3 varor", "Se 4 varor")
-    return any(m in html for m in markers)
-
-
-def _html_has_product_cards(html: str) -> bool:
-    markers = ('li class="Grid-cell', 'class="ohKiwh8z', 'containerclassname="ha6aAK6g"', 'class="slH8Imgo"')
-    return any(m in html for m in markers)
 
 
 # ---------------------------------------------------------------------------
@@ -654,60 +710,72 @@ def _html_has_product_cards(html: str) -> bool:
 def _parse_products_from_html(html: str, source_url: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     items: list[dict] = []
+    seen: set[int] = set()
 
-    for article in soup.select("li.Grid-cell article"):
-        name_el = article.select_one("h3")
-        if name_el is None:
+    for article in soup.select("li.Grid-cell article, article.ohKiwh8z"):
+        art_id = id(article)
+        if art_id in seen:
             continue
-        name = _clean(name_el.get_text(" ", strip=True))
-        if not name:
-            continue
+        seen.add(art_id)
 
-        meta_rows = article.select("div.uLmN8HjX")
-        brand, size, description = None, None, None
-
-        if meta_rows:
-            spans = meta_rows[0].find_all("span")
-            if spans:
-                brand = _clean(spans[0].get_text(" ", strip=True)).rstrip(".")
-            if len(spans) > 1:
-                size = _clean(spans[1].get_text(" ", strip=True))
-        if len(meta_rows) > 1:
-            description = _clean(meta_rows[1].get_text(" ", strip=True))
-
-        image_url = _extract_image_url(article)
-        price_label = _extract_price_label(article)
-        is_membership = _is_membership_price(price_label, article)
-
-        deal_text = _normalize_deal_text(
-            _clean(" ".join(s.get_text(" ", strip=True) for s in article.select("div.slH8Imgo span")))
-        )
-        aria_label = _get_aria_label(article)
-        if not deal_text:
-            deal_text = _normalize_deal_text(_extract_deal_text_from_aria(aria_label))
-
-        extra_bits = [_clean(n.get_text(" ", strip=True)) for n in article.select("div.UWFn16pY div") if _clean(n.get_text(" ", strip=True))]
-        extra_info = " | ".join(extra_bits) if extra_bits else None
-
-        comparison_price = next((b for b in extra_bits if _looks_like_comparison_price(b)), None)
-        if comparison_price is None:
-            comparison_price = _extract_comparison_price_from_aria(aria_label)
-
-        items.append({
-            "external_id": _deal_external_id(source_url, name, brand, size, deal_text),
-            "name": name,
-            "brand": brand,
-            "size": size,
-            "description": description,
-            "image_url": image_url,
-            "price_label": price_label,
-            "is_membership_price": is_membership,
-            "deal_text": deal_text or None,
-            "comparison_price": comparison_price,
-            "extra_info": extra_info,
-        })
+        parsed = _parse_single_article(article, source_url)
+        if parsed:
+            items.append(parsed)
 
     return items
+
+
+def _parse_single_article(article, source_url: str) -> dict | None:
+    name_el = article.select_one("h3")
+    if name_el is None:
+        return None
+    name = _clean(name_el.get_text(" ", strip=True))
+    if not name:
+        return None
+
+    meta_rows = article.select("div.uLmN8HjX")
+    brand, size, description = None, None, None
+
+    if meta_rows:
+        spans = meta_rows[0].find_all("span")
+        if spans:
+            brand = _clean(spans[0].get_text(" ", strip=True)).rstrip(".")
+        if len(spans) > 1:
+            size = _clean(spans[1].get_text(" ", strip=True))
+    if len(meta_rows) > 1:
+        description = _clean(meta_rows[1].get_text(" ", strip=True))
+
+    image_url = _extract_image_url(article)
+    price_label = _extract_price_label(article)
+    is_membership = _is_membership_price(price_label, article)
+
+    deal_text = _normalize_deal_text(
+        _clean(" ".join(s.get_text(" ", strip=True) for s in article.select("div.slH8Imgo span")))
+    )
+    aria_label = _get_aria_label(article)
+    if not deal_text:
+        deal_text = _normalize_deal_text(_extract_deal_text_from_aria(aria_label))
+
+    extra_bits = [_clean(n.get_text(" ", strip=True)) for n in article.select("div.UWFn16pY div") if _clean(n.get_text(" ", strip=True))]
+    extra_info = " | ".join(extra_bits) if extra_bits else None
+
+    comparison_price = next((b for b in extra_bits if _looks_like_comparison_price(b)), None)
+    if comparison_price is None:
+        comparison_price = _extract_comparison_price_from_aria(aria_label)
+
+    return {
+        "external_id": _deal_external_id(source_url, name, brand, size, deal_text),
+        "name": name,
+        "brand": brand,
+        "size": size,
+        "description": description,
+        "image_url": image_url,
+        "price_label": price_label,
+        "is_membership_price": is_membership,
+        "deal_text": deal_text or None,
+        "comparison_price": comparison_price,
+        "extra_info": extra_info,
+    }
 
 
 def _clean(value: str | None) -> str:
@@ -834,6 +902,13 @@ def _save_deals(db: Session, store: Store, parsed: list[dict]) -> int:
     return created
 
 
+def _extract_week_number(html: str) -> int | None:
+    match = re.search(r"[Vv]ecka\s+(\d{1,2})", html)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _extract_flyer_url(html: str) -> str | None:
     soup = BeautifulSoup(html, "lxml")
     for a in soup.find_all("a", href=True):
@@ -861,7 +936,7 @@ def _download_flyer(flyer_url: str, store_external_id: str) -> tuple[str | None,
         return None, None
 
 
-def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str | None, file_size: int | None) -> bool:
+def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str | None, file_size: int | None, week_number: int | None = None) -> bool:
     if not flyer_url:
         return False
 
@@ -870,7 +945,9 @@ def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str 
         if pdf_path and not existing.pdf_path:
             existing.pdf_path = pdf_path
             existing.file_size = file_size
-            db.commit()
+        if week_number and not existing.week_number:
+            existing.week_number = week_number
+        db.commit()
         return False
 
     flyer = Flyer(
@@ -878,6 +955,7 @@ def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str 
         url=flyer_url,
         pdf_path=pdf_path,
         file_size=file_size,
+        week_number=week_number,
     )
     db.add(flyer)
     db.commit()

@@ -1,6 +1,13 @@
+import json
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+class OpeningHoursEntry(BaseModel):
+    days: list[str]
+    open: str | None = None
+    close: str | None = None
 
 
 class StoreDetailOut(BaseModel):
@@ -14,12 +21,19 @@ class StoreDetailOut(BaseModel):
     google_maps_url: str | None = None
     latitude: float | None = None
     longitude: float | None = None
-    opening_hours: str | None = None
-    special_hours: str | None = None
+    opening_hours: list[OpeningHoursEntry] | None = None
+    special_hours: list[OpeningHoursEntry] | None = None
     scraped_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("opening_hours", "special_hours", mode="before")
+    @classmethod
+    def parse_json_hours(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
 
 
 class StoreOut(BaseModel):

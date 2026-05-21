@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, ForeignKey, String
+from sqlalchemy import BigInteger, ForeignKey, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -15,6 +15,7 @@ class Flyer(Base):
     url: Mapped[str] = mapped_column(String(1000))
     pdf_path: Mapped[str | None] = mapped_column(String(1000))
     file_size: Mapped[int | None] = mapped_column(BigInteger)
+    week_number: Mapped[int | None] = mapped_column(SmallInteger)
     valid_from: Mapped[datetime | None] = mapped_column()
     valid_to: Mapped[datetime | None] = mapped_column()
     scraped_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
