@@ -1,3 +1,3 @@
-from app.scrapers import coop, willys
+from app.scrapers import coop, lidl, willys
 
-__all__ = ["coop", "willys"]
+__all__ = ["coop", "lidl", "willys"]
