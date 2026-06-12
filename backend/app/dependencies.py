@@ -4,6 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Company
 
+# Companies whose deals/flyers are identical in every store. They are scraped
+# once onto an anchor store; store-scoped endpoints serve them company-wide.
+NATIONAL_DEAL_COMPANY_SLUGS = {"lidl"}
+
 
 def get_company_by_slug(db: Session, slug: str) -> Company:
     company = (

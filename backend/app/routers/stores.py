@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Flyer, Store
 from app.db.session import get_db
-from app.dependencies import get_company_by_slug
+from app.dependencies import NATIONAL_DEAL_COMPANY_SLUGS, get_company_by_slug
 from app.schemas.flyer import FlyerOut
 from app.schemas.store import StoreOut
 
@@ -65,10 +65,14 @@ def list_store_flyers(
     if not store:
         raise HTTPException(status_code=404, detail=f"Store {store_id} not found for {company_slug}")
 
+    q = db.query(Flyer)
+    if company.slug in NATIONAL_DEAL_COMPANY_SLUGS:
+        q = q.join(Store).filter(Store.company_id == company.id)
+    else:
+        q = q.filter(Flyer.store_id == store_id)
+
     flyers = (
-        db.query(Flyer)
-        .filter(Flyer.store_id == store_id)
-        .order_by(Flyer.scraped_at.desc())
+        q.order_by(Flyer.scraped_at.desc())
         .offset(offset)
         .limit(limit)
         .all()

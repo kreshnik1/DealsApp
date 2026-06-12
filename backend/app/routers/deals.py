@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Company, Deal, Store
 from app.db.session import get_db
-from app.dependencies import get_company_by_slug
+from app.dependencies import NATIONAL_DEAL_COMPANY_SLUGS, get_company_by_slug
 from app.schemas.deal import DealOut
 
 router = APIRouter(prefix="/deals", tags=["deals"])
@@ -81,7 +81,15 @@ def list_store_deals(
     if not store:
         raise HTTPException(status_code=404, detail=f"Store {store_id} not found for {company_slug}")
 
-    q = db.query(Deal).options(joinedload(Deal.store)).filter(Deal.store_id == store_id)
+    if company.slug in NATIONAL_DEAL_COMPANY_SLUGS:
+        q = (
+            db.query(Deal)
+            .join(Store)
+            .options(joinedload(Deal.store))
+            .filter(Store.company_id == company.id)
+        )
+    else:
+        q = db.query(Deal).options(joinedload(Deal.store)).filter(Deal.store_id == store_id)
 
     if search:
         term = f"%{search}%"

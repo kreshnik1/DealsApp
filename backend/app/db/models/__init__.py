@@ -6,3 +6,5 @@ from app.db.models.flyer import Flyer
 from app.db.models.product import Product
 from app.db.models.role import Role
 from app.db.models.user import User
+from app.db.models.shopping_list import ShoppingList, ShoppingListItem
+from app.db.models.inventory import InventoryItem
