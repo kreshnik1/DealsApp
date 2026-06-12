@@ -59,9 +59,11 @@ enum APIEndpoint {
     }
 
     private var queryItems: [URLQueryItem] {
+        let items: [URLQueryItem?]
+
         switch self {
         case let .listDeals(query):
-            return [
+            items = [
                 queryItem(named: "search", value: query.search),
                 queryItem(named: "chain", value: query.chain),
                 queryItem(named: "category", value: query.category),
@@ -69,7 +71,7 @@ enum APIEndpoint {
                 queryItem(named: "offset", value: query.offset)
             ] + query.storeIDs.map { queryItem(named: "store_id", value: $0) }
         case let .listCompanyDeals(_, query):
-            return [
+            items = [
                 queryItem(named: "search", value: query.search),
                 queryItem(named: "chain", value: query.chain),
                 queryItem(named: "category", value: query.category),
@@ -77,34 +79,36 @@ enum APIEndpoint {
                 queryItem(named: "offset", value: query.offset)
             ]
         case let .listStoreDeals(_, _, query):
-            return [
+            items = [
                 queryItem(named: "search", value: query.search),
                 queryItem(named: "category", value: query.category),
                 queryItem(named: "limit", value: query.limit),
                 queryItem(named: "offset", value: query.offset)
             ]
         case .getDeal:
-            return []
+            items = []
         case let .listStores(query):
-            return [
+            items = [
                 queryItem(named: "chain", value: query.chain)
             ]
         case let .listCompanyStores(_, query):
-            return [
-                queryItem(named: "chain", value: query.chain)
+            items = [
+                queryItem(named: "chain", value: query.chain),
+                queryItem(named: "limit", value: query.limit)
             ]
         case let .listFlyers(query):
-            return [
+            items = [
                 queryItem(named: "limit", value: query.limit),
                 queryItem(named: "offset", value: query.offset)
             ] + query.storeIDs.map { queryItem(named: "store_id", value: $0) }
         case let .listStoreFlyers(_, _, query):
-            return [
+            items = [
                 queryItem(named: "limit", value: query.limit),
                 queryItem(named: "offset", value: query.offset)
             ]
         }
-        .compactMap { $0 }
+
+        return items.compactMap { $0 }
     }
 
     private func queryItem(named name: String, value: String?) -> URLQueryItem? {
@@ -115,7 +119,15 @@ enum APIEndpoint {
         return URLQueryItem(name: name, value: value)
     }
 
-    private func queryItem(named name: String, value: Int) -> URLQueryItem {
+    private func queryItem(named name: String, value: Int) -> URLQueryItem? {
         URLQueryItem(name: name, value: String(value))
+    }
+
+    private func queryItem(named name: String, value: Int?) -> URLQueryItem? {
+        guard let value else {
+            return nil
+        }
+
+        return URLQueryItem(name: name, value: String(value))
     }
 }

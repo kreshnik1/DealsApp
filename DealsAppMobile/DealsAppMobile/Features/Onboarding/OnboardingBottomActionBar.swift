@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct OnboardingBottomActionBar: View {
     let title: String
@@ -17,7 +18,7 @@ struct OnboardingBottomActionBar: View {
 
     var body: some View {
         VStack(spacing: AppTheme.Spacing.medium) {
-            Button(title, action: action)
+            Button(title, action: handleTap)
                 .buttonStyle(AppButtonStyle(variant: .primary))
                 .disabled(isDisabled)
                 .opacity(isDisabled ? 0.55 : 1)
@@ -30,5 +31,11 @@ struct OnboardingBottomActionBar: View {
                 .fill(AppTheme.Colors.footerShade)
                 .ignoresSafeArea(edges: .bottom)
         }
+    }
+
+    private func handleTap() {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred(intensity: 0.85)
+        action()
     }
 }

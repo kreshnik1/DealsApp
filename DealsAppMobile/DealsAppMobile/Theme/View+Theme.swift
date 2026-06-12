@@ -88,10 +88,4 @@ extension View {
     ) -> some View {
         modifier(BreezeSurfaceModifier(fill: fill, border: border, radius: radius, lineWidth: lineWidth))
     }
-
-    func breezeGlassButtonCircle() -> some View {
-        frame(width: 44, height: 44)
-            .contentShape(Circle())
-            .breezeGlassPanel(.interactive, cornerRadius: AppTheme.Radii.capsule)
-    }
 }

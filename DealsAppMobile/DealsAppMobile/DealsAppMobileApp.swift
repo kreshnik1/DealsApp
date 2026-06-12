@@ -5,6 +5,7 @@
 //  Created by Kushtrim Abdiu on 2026-06-06.
 //
 
+import SwiftData
 import SwiftUI
 
 @main
@@ -18,5 +19,6 @@ struct DealsAppMobileApp: App {
                 .environment(appState)
                 .environment(\.appServices, appServices)
         }
+        .modelContainer(AppModelConfiguration.sharedContainer)
     }
 }

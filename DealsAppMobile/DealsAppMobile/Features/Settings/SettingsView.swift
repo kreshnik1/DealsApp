@@ -69,6 +69,6 @@ struct SettingsView: View {
 #Preview {
     NavigationStack {
         SettingsView()
-            .environment(AppState(hasCompletedOnboarding: true, savedAddress: "Malmö, Sodra Forstadsgatan 12"))
+            .environment(AppState(hasCompletedOnboarding: true, savedAddress: "Malmö, Sodra Forstadsgatan 12", selectedStoreIDs: ["1", "2"]))
     }
 }

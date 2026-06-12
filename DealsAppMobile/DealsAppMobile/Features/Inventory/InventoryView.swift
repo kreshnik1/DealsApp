@@ -1,11 +1,22 @@
+import SwiftData
 import SwiftUI
 
 struct InventoryView: View {
+    @Environment(\.modelContext) private var modelContext
+
     var body: some View {
-        PlaceholderFeatureView(
-            title: "Inventory",
-            systemImage: "shippingbox.fill",
-            message: "Your personal pantry and at-home stock will live here later."
-        )
+        InventoryViewContainer(context: modelContext)
     }
+}
+
+#Preview {
+    NavigationStack {
+        InventoryView()
+            .environment(AppState(
+                hasCompletedOnboarding: true,
+                savedAddress: "Malmö, Södra Förstadsgatan 12",
+                selectedStoreIDs: ["1", "2"]
+            ))
+    }
+    .modelContainer(AppPreviewContainer.shoppingList)
 }

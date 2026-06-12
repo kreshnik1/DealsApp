@@ -32,7 +32,7 @@ struct PlaceholderFeatureView: View {
             .padding(.top, AppTheme.Spacing.xLarge)
             .padding(.bottom, AppTheme.Spacing.xxLarge)
         }
-        .breezeScreen()
+        .background(Color(uiColor: .systemBackground))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.large)
     }

@@ -2,7 +2,6 @@ import SwiftUI
 
 private enum AppTab: Hashable {
     case feed
-    case stores
     case list
     case inventory
 }
@@ -19,14 +18,6 @@ struct MainTabView: View {
                 Label("Feed", systemImage: "square.grid.2x2.fill")
             }
             .tag(AppTab.feed)
-
-            NavigationStack {
-                StoresView()
-            }
-            .tabItem {
-                Label("Stores", systemImage: "building.2.fill")
-            }
-            .tag(AppTab.stores)
 
             NavigationStack {
                 ShoppingListView()

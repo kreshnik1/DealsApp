@@ -4,30 +4,35 @@ enum AppTheme {
     static let brandEyebrow = "BREEZE"
 
     enum Colors {
-        static let screenBase = Color.adaptive(light: 0xF7F1E7, dark: 0x0E0E12)
-        static let screenSecondary = Color.adaptive(light: 0xFFFCF7, dark: 0x16161C)
-        static let primaryText = Color.adaptive(light: 0x181712, dark: 0xF5F4F0)
-        static let secondaryText = Color.adaptive(light: 0x4F493F, dark: 0xBDBBB5)
-        static let tertiaryText = Color.adaptive(light: 0x7A7267, dark: 0x777875)
-        static let buttonPrimaryText = Color.adaptive(light: 0x181712, dark: 0x0E0E12)
+        static let screenBase = Color.adaptive(light: 0xF4F8FE, dark: 0x0A1019)
+        static let screenSecondary = Color.adaptive(light: 0xFFFFFF, dark: 0x131A24)
+        static let primaryText = Color.adaptive(light: 0x101828, dark: 0xF3F7FF)
+        static let secondaryText = Color.adaptive(light: 0x5E6A7D, dark: 0xB9C5D5)
+        static let tertiaryText = Color.adaptive(light: 0x8894A7, dark: 0x7E8A9A)
+        static let buttonPrimaryText = Color.adaptive(light: 0xFFFFFF, dark: 0x07111F)
 
-        static let accent = Color.adaptive(light: 0xD6B156, dark: 0xE8C97A)
-        static let accentStrong = Color.adaptive(light: 0x8E6A17, dark: 0xC9A84C)
-        static let accentSoft = Color.adaptive(light: 0xB68421, dark: 0xE8C97A, lightAlpha: 0.16, darkAlpha: 0.14)
-        static let accentSoft2 = Color.adaptive(light: 0xB68421, dark: 0xE8C97A, lightAlpha: 0.09, darkAlpha: 0.07)
+        static let accent = Color.adaptive(light: 0x0A84FF, dark: 0x67B7FF)
+        static let accentStrong = Color.adaptive(light: 0x0057D9, dark: 0x9ED1FF)
+        static let accentSoft = Color.adaptive(light: 0x0A84FF, dark: 0x67B7FF, lightAlpha: 0.18, darkAlpha: 0.16)
+        static let accentSoft2 = Color.adaptive(light: 0x0A84FF, dark: 0x67B7FF, lightAlpha: 0.08, darkAlpha: 0.08)
 
-        static let panelFill = Color.adaptive(light: 0xFFFCF7, dark: 0x16161C)
-        static let panelFillStrong = Color.adaptive(light: 0xF1E8DA, dark: 0x1E1E26)
-        static let panelFillMuted = Color.adaptive(light: 0xE4D9C4, dark: 0x26262F)
+        static let panelFill = Color.adaptive(light: 0xFFFFFF, dark: 0x151D28)
+        static let panelFillStrong = Color.adaptive(light: 0xF7FAFF, dark: 0x1A2430)
+        static let panelFillMuted = Color.adaptive(light: 0xEAF1FA, dark: 0x223042)
 
-        static let border = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.06, darkAlpha: 0.07)
-        static let borderStrong = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.12)
-        static let activeBorder = Color.adaptive(light: 0xB68421, dark: 0xE8C97A, lightAlpha: 0.26, darkAlpha: 0.25)
+        static let border = Color.adaptive(light: 0x102341, dark: 0xFFFFFF, lightAlpha: 0.06, darkAlpha: 0.08)
+        static let borderStrong = Color.adaptive(light: 0x102341, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.12)
+        static let activeBorder = Color.adaptive(light: 0x0A84FF, dark: 0x67B7FF, lightAlpha: 0.28, darkAlpha: 0.26)
 
-        static let heroStart = Color.adaptive(light: 0xFFF8EA, dark: 0x21212A)
-        static let heroEnd = Color.adaptive(light: 0xF1E8DA, dark: 0x121218)
-        static let textFieldFill = Color.adaptive(light: 0xF1E8DA, dark: 0x1E1E26)
-        static let footerShade = Color.adaptive(light: 0xFFF8EA, dark: 0x000000, lightAlpha: 0.92, darkAlpha: 0.22)
+        static let heroStart = Color.adaptive(light: 0xF7FBFF, dark: 0x162334)
+        static let heroEnd = Color.adaptive(light: 0xE6F0FF, dark: 0x0F1824)
+        static let textFieldFill = Color.adaptive(light: 0xEEF5FF, dark: 0x172231)
+        static let footerShade = Color.adaptive(light: 0xFFFFFF, dark: 0x000000, lightAlpha: 0.88, darkAlpha: 0.22)
+
+        static let screenTintTop = Color.adaptive(light: 0x9FCFFF, dark: 0x3A6EA5, lightAlpha: 0.34, darkAlpha: 0.22)
+        static let screenTintBottom = Color.adaptive(light: 0xD9EDFF, dark: 0x20364F, lightAlpha: 0.32, darkAlpha: 0.18)
+        static let featureStart = Color.adaptive(light: 0x58B8FF, dark: 0x2B7FE0)
+        static let featureEnd = Color.adaptive(light: 0x0B4DA8, dark: 0x0D3B73)
     }
 
     enum Spacing {
@@ -66,10 +71,10 @@ enum AppTheme {
 
     enum Shadows {
         static let ambient = ShadowStyle(
-            color: Color.adaptive(light: 0x73561A, dark: 0x000000, lightAlpha: 0.14, darkAlpha: 0.28),
-            radius: 30,
+            color: Color.adaptive(light: 0x6B85A8, dark: 0x000000, lightAlpha: 0.18, darkAlpha: 0.28),
+            radius: 28,
             x: 0,
-            y: -2
+            y: 12
         )
     }
 
@@ -81,8 +86,8 @@ enum AppTheme {
 
     enum Materials {
         static let panel = Glass.regular.tint(Colors.accentSoft2)
-        static let feature = Glass.regular.tint(Colors.accentSoft)
-        static let interactive = Glass.regular.tint(Colors.accentSoft).interactive()
+        static let feature = Glass.regular.tint(Colors.panelFillStrong)
+        static let interactive = Glass.regular.tint(Colors.accentSoft2).interactive()
     }
 }
 

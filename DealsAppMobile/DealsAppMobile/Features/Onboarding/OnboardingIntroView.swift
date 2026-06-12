@@ -1,56 +1,65 @@
 import SwiftUI
 
 struct OnboardingIntroView: View {
-    let onContinue: () -> Void
+    let isActive: Bool
+
+    @State private var showsText = false
+    @State private var revealSequence = 0
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
-                Spacer(minLength: AppTheme.Spacing.large)
+        GeometryReader { proxy in
+            VStack {
+                Spacer(minLength: 0)
 
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.large) {
-                    Text(AppTheme.brandEyebrow)
-                        .breezeText(.eyebrow, color: AppTheme.Colors.accentStrong)
-
-                    Text("Weekly grocery offers, without the supermarket chaos.")
-                        .breezeText(.hero)
+                VStack(spacing: AppTheme.Spacing.medium) {
+                    Text("Welcome to Breeze")
+                        .font(.system(size: 44, weight: .bold))
+                        .tracking(-1.4)
+                        .foregroundStyle(AppTheme.Colors.primaryText)
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("Breeze starts with the stores you care about and turns their weekly offers into a calmer, more personal feed.")
+                    Text("Discover nearby offers, follow the stores you care about, and keep every weekly deal in one simple place.")
                         .breezeText(.body, color: AppTheme.Colors.secondaryText)
-                        .lineSpacing(4)
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: 340)
+                .frame(maxWidth: .infinity)
+                .opacity(showsText ? 1 : 0)
+                .blur(radius: showsText ? 0 : 10)
+                .offset(y: showsText ? 0 : 28)
 
-                OnboardingIntroHeroCard()
-
-                VStack(spacing: AppTheme.Spacing.large) {
-                    OnboardingIntroValueRow(
-                        icon: "sparkles",
-                        title: "Personal first",
-                        message: "The feed will be shaped around the stores you actually visit."
-                    )
-
-                    OnboardingIntroValueRow(
-                        icon: "mappin.and.ellipse",
-                        title: "Location-aware",
-                        message: "Your address becomes the starting point for nearby stores and local weekly deals."
-                    )
-                }
-
-                Spacer(minLength: AppTheme.Spacing.xxLarge)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, AppTheme.Spacing.screenInset)
-            .padding(.top, AppTheme.Spacing.xxLarge)
-            .padding(.bottom, 120)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .scrollIndicators(.hidden)
-        .safeAreaInset(edge: .bottom) {
-            OnboardingBottomActionBar(
-                title: "Continue",
-                action: onContinue
-            )
+        .onAppear {
+            runRevealSequence()
+        }
+        .onChange(of: isActive, initial: false) { _, _ in
+            runRevealSequence()
+        }
+    }
+
+    private func runRevealSequence() {
+        revealSequence += 1
+        let sequence = revealSequence
+
+        guard isActive else {
+            showsText = false
+            return
+        }
+
+        showsText = false
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard revealSequence == sequence, isActive else { return }
+
+            withAnimation(.easeOut(duration: 0.62)) {
+                showsText = true
+            }
         }
     }
 }

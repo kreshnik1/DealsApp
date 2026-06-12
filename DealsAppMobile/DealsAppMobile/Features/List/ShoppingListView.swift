@@ -1,11 +1,22 @@
+import SwiftData
 import SwiftUI
 
 struct ShoppingListView: View {
+    @Environment(\.modelContext) private var modelContext
+
     var body: some View {
-        PlaceholderFeatureView(
-            title: "Shopping List",
-            systemImage: "checklist",
-            message: "The local grocery planning flow will be layered into this tab."
-        )
+        ShoppingListViewContainer(context: modelContext)
     }
+}
+
+#Preview {
+    NavigationStack {
+        ShoppingListView()
+            .environment(AppState(
+                hasCompletedOnboarding: true,
+                savedAddress: "Malmö, Södra Förstadsgatan 12",
+                selectedStoreIDs: ["1", "2"]
+            ))
+    }
+    .modelContainer(AppPreviewContainer.shoppingList)
 }

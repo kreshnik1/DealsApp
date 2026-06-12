@@ -1,109 +1,180 @@
 import SwiftUI
 
 struct OnboardingAddressView: View {
-    @Environment(AppState.self) private var appState
-    @FocusState private var addressFieldFocused: Bool
-    @State private var address = ""
+    let isActive: Bool
 
-    let onBack: () -> Void
+    @FocusState private var addressFieldFocused: Bool
+    @StateObject private var locationManager = OnboardingLocationManager()
+    @State private var showsText = false
+    @State private var revealSequence = 0
+    @Binding var address: String
+    @Binding var locationCoordinates: UserLocationCoordinates?
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
+            VStack(spacing: AppTheme.Spacing.xxLarge) {
+                Spacer(minLength: 72)
+
+                VStack(spacing: AppTheme.Spacing.medium) {
+                    Text("Your location")
+                        .font(.system(size: 44, weight: .bold))
+                        .tracking(-1.4)
                         .foregroundStyle(AppTheme.Colors.primaryText)
-                }
-                .frame(width: 44, height: 44)
-                .breezeSurface(
-                    fill: AppTheme.Colors.panelFillStrong,
-                    border: AppTheme.Colors.borderStrong,
-                    radius: AppTheme.Radii.phone
-                )
-
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.large) {
-                    Text("STARTING POINT")
-                        .breezeText(.eyebrow, color: AppTheme.Colors.accentStrong)
-
-                    Text("Set the address you want Breeze to open with.")
-                        .breezeText(.hero)
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("For now this exact address appears beneath the Breeze title in the Feed. Later it becomes the basis for nearby stores and personalization.")
+                    Text("We use it to show stores near you.")
                         .breezeText(.body, color: AppTheme.Colors.secondaryText)
-                        .lineSpacing(4)
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: 320)
+                .frame(maxWidth: .infinity)
+                .opacity(showsText ? 1 : 0)
+                .blur(radius: showsText ? 0 : 10)
+                .offset(y: showsText ? 0 : 24)
 
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.large) {
-                    VStack(alignment: .leading, spacing: AppTheme.Spacing.medium) {
-                        Text("Address")
-                            .breezeText(.eyebrow, color: AppTheme.Colors.accentStrong)
+                VStack(spacing: AppTheme.Spacing.medium) {
+                    Button(action: locationManager.requestCurrentLocation) {
+                        HStack(spacing: AppTheme.Spacing.medium) {
+                            Image(systemName: locationManager.primaryButtonSymbol)
+                                .font(.system(size: 16, weight: .semibold))
 
-                        TextField("Malmö, Sodra Forstadsgatan 12", text: $address)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-                            .font(AppTheme.Typography.body)
-                            .padding(.horizontal, AppTheme.Spacing.large)
-                            .padding(.vertical, AppTheme.Spacing.large)
-                            .breezeSurface(
-                                fill: AppTheme.Colors.textFieldFill,
-                                border: AppTheme.Colors.border,
-                                radius: AppTheme.Radii.large
-                            )
-                            .focused($addressFieldFocused)
+                            Text(locationManager.primaryButtonTitle)
+                                .breezeText(.bodyStrong)
 
-                        Text("You can change this later from Settings.")
-                            .breezeText(.meta, color: AppTheme.Colors.tertiaryText)
+                            Spacer()
+
+                            if locationManager.isFetching {
+                                ProgressView()
+                                    .tint(AppTheme.Colors.accent)
+                            }
+                        }
+                        .padding(.horizontal, AppTheme.Spacing.large)
+                        .padding(.vertical, AppTheme.Spacing.large)
                     }
+                    .buttonStyle(.plain)
+                    .background(selectionCard(isSelected: locationManager.isResolved))
 
-                    OnboardingAddressPreviewCard(address: previewAddress)
+                    TextField("Enter address", text: $address)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .font(AppTheme.Typography.body)
+                        .padding(.horizontal, AppTheme.Spacing.large)
+                        .padding(.vertical, AppTheme.Spacing.large)
+                        .background(selectionCard(isSelected: trimmedAddress.isEmpty == false))
+                        .focused($addressFieldFocused)
+
+                    if let statusText {
+                        Text(statusText)
+                            .breezeText(.meta, color: statusColor)
+                            .multilineTextAlignment(.center)
+                    }
                 }
-                .padding(20)
-                .breezeSurface(
-                    fill: AppTheme.Colors.panelFill,
-                    border: AppTheme.Colors.border,
-                    radius: AppTheme.Radii.xLarge
-                )
+                .frame(maxWidth: 420)
+                .frame(maxWidth: .infinity)
 
-                Spacer(minLength: AppTheme.Spacing.xxLarge)
+                Spacer(minLength: 140)
             }
             .padding(.horizontal, AppTheme.Spacing.screenInset)
             .padding(.top, AppTheme.Spacing.xxLarge)
-            .padding(.bottom, 120)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
-        .safeAreaInset(edge: .bottom) {
-            OnboardingBottomActionBar(
-                title: "Enter Breeze",
-                isDisabled: trimmedAddress.isEmpty,
-                action: completeOnboarding
-            )
+        .onAppear {
+            handleOnAppear()
+            runRevealSequence()
         }
-        .onAppear(perform: handleOnAppear)
+        .onChange(of: isActive, initial: false) { _, _ in
+            runRevealSequence()
+        }
+        .onChange(of: locationManager.resolvedAddress) { _, newValue in
+            guard let newValue else { return }
+            address = newValue
+            locationCoordinates = locationManager.resolvedCoordinates
+        }
+        .onChange(of: address, initial: false) { _, newValue in
+            let trimmedValue = normalized(newValue)
+            let resolvedAddress = normalized(locationManager.resolvedAddress)
+
+            guard trimmedValue != resolvedAddress else {
+                return
+            }
+
+            locationCoordinates = nil
+        }
     }
 
     private var trimmedAddress: String {
         address.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var previewAddress: String {
-        trimmedAddress.isEmpty ? "Your saved address will appear here." : trimmedAddress
+    private var statusText: String? {
+        if let errorMessage = locationManager.errorMessage {
+            return errorMessage
+        }
+
+        if locationManager.isResolved, let resolvedAddress = locationManager.resolvedAddress {
+            return resolvedAddress
+        }
+
+        if trimmedAddress.isEmpty == false {
+            return "Address added"
+        }
+
+        return "Use your current location or enter it manually"
     }
 
-    private func completeOnboarding() {
-        appState.completeOnboarding(with: address)
+    private var statusColor: Color {
+        if locationManager.errorMessage != nil {
+            return AppTheme.Colors.tertiaryText
+        }
+
+        return trimmedAddress.isEmpty ? AppTheme.Colors.tertiaryText : AppTheme.Colors.primaryText
     }
 
     private func handleOnAppear() {
-        if address.isEmpty {
-            address = appState.savedAddress
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if trimmedAddress.isEmpty {
+                addressFieldFocused = true
+            }
+        }
+    }
+
+    private func runRevealSequence() {
+        revealSequence += 1
+        let sequence = revealSequence
+
+        guard isActive else {
+            showsText = false
+            return
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            addressFieldFocused = true
+        showsText = false
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard revealSequence == sequence, isActive else { return }
+
+            withAnimation(.easeOut(duration: 0.62)) {
+                showsText = true
+            }
         }
+    }
+
+    private func selectionCard(isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: AppTheme.Radii.large, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemBackground))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radii.large, style: .continuous)
+                    .strokeBorder(
+                        Color(uiColor: isSelected ? .systemBlue : .separator),
+                        lineWidth: 1
+                    )
+            }
+    }
+
+    private func normalized(_ value: String?) -> String {
+        (value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

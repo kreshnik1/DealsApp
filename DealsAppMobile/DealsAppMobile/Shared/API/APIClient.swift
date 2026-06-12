@@ -36,7 +36,10 @@ struct APIClient {
         do {
             return try Self.makeDecoder().decode(responseType, from: data)
         } catch {
-            throw APIError.decodingFailed(underlying: error)
+            throw APIError.decodingFailed(
+                underlying: error,
+                responseBody: Self.responsePreview(from: data)
+            )
         }
     }
 
@@ -58,10 +61,35 @@ struct APIClient {
             return date
         }
 
+        if let date = DateFormatter.backendFractionalSecondsUTC.date(from: value) {
+            return date
+        }
+
+        if let date = DateFormatter.backendStandardUTC.date(from: value) {
+            return date
+        }
+
         throw DecodingError.dataCorruptedError(
             in: container,
             debugDescription: "Invalid ISO8601 date string: \(value)"
         )
+    }
+
+    private static func responsePreview(from data: Data) -> String? {
+        guard data.isEmpty == false else {
+            return nil
+        }
+
+        let previewData = data.prefix(500)
+        guard var string = String(data: previewData, encoding: .utf8) else {
+            return "Non-UTF8 response (\(data.count) bytes)"
+        }
+
+        if data.count > previewData.count {
+            string += "..."
+        }
+
+        return string.replacingOccurrences(of: "\n", with: " ")
     }
 }
 
@@ -75,6 +103,26 @@ private extension ISO8601DateFormatter {
     static let standard: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
+
+private extension DateFormatter {
+    static let backendFractionalSecondsUTC: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+        return formatter
+    }()
+
+    static let backendStandardUTC: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return formatter
     }()
 }

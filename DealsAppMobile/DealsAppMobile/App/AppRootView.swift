@@ -17,10 +17,10 @@ struct AppRootView: View {
 
 #Preview("Onboarding") {
     AppRootView()
-        .environment(AppState(hasCompletedOnboarding: false, savedAddress: ""))
+        .environment(AppState(hasCompletedOnboarding: false, savedAddress: "", selectedStoreIDs: []))
 }
 
 #Preview("Main App") {
     AppRootView()
-        .environment(AppState(hasCompletedOnboarding: true, savedAddress: "Malmö Centralstation"))
+        .environment(AppState(hasCompletedOnboarding: true, savedAddress: "Malmö Centralstation", selectedStoreIDs: ["1", "2", "3"]))
 }
