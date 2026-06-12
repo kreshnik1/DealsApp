@@ -166,6 +166,8 @@ def scrape_store_info(
     for i, store in enumerate(targets):
         _throttle(i)
 
+        account_number = (store.external_id or "").removeprefix("ica:")
+
         try:
             info = _fetch_store_info_static(store.store_url)
             if info is None:
@@ -173,15 +175,21 @@ def scrape_store_info(
                 info = _fetch_store_info_from_page(store.store_url)
         except Exception as exc:
             log.error("Unexpected error scraping store '%s' (id=%d): %s", store.name, store.id, exc)
-            failed += 1
-            continue
+            info = None
+
+        if not info:
+            # Some stores link to their own external website instead of an
+            # ica.se page; the store directory still has address + coordinates.
+            info = {}
+            _apply_slim_fallback(info, slim_by_account.get(account_number))
+            if info:
+                log.info("Using store directory data for '%s' (page had none): %s", store.name, store.store_url)
 
         if not info:
             log.error("No data scraped for store '%s' (id=%d): %s", store.name, store.id, store.store_url)
             failed += 1
             continue
 
-        account_number = (store.external_id or "").removeprefix("ica:")
         _apply_slim_fallback(info, slim_by_account.get(account_number))
 
         missing = [f for f in ("address", "postal_code", "city", "latitude", "longitude") if not info.get(f)]
