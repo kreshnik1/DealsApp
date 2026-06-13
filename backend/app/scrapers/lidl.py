@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import html as html_lib
 import json
 import logging
+import random
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -11,7 +13,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, Flyer, Store
+from app.db.models import Company, Deal, Flyer, Store
 from app.db.models.store_detail import StoreDetail
 from app.dependencies import get_or_create_company
 
@@ -24,7 +26,16 @@ LIDL_STORES_URL = f"{LIDL_BASE}/s/sv-SE/butiker/"
 LIDL_FLYERS_URL = f"{LIDL_BASE}/c/reklamblad/s10018018"
 STORE_URL_PREFIX = "/s/sv-SE/butiker/"
 
-MAX_CONCURRENT_REQUESTS = 15
+# Lidl Sweden runs identical deals and prices in all stores (their region system
+# maps every region to the same price list), so deals are scraped once and
+# attached to a single anchor store, queryable via chain="LIDL".
+CAMPAIGN_LINK_PATTERN = re.compile(r'href="(/c/[a-z0-9-]+/a\d+)"')
+GRID_DATA_PATTERN = re.compile(r'data-grid-data="([^"]+)"')
+
+# Polite scraping: fetch a small batch, then pause before the next one.
+BATCH_SIZE = 5
+REQUEST_DELAY = (1.0, 2.5)
+BATCH_PAUSE = (6.0, 12.0)
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -122,8 +133,6 @@ def scrape_store_info(
             "stores_failed": 0,
         }
 
-    about_urls = {s.id: s.store_url for s in targets}
-
     existing_details = {
         sd.store_id: sd
         for sd in db.query(StoreDetail).filter(
@@ -131,7 +140,7 @@ def scrape_store_info(
         ).all()
     }
 
-    fetched = _fetch_store_infos_concurrent(about_urls)
+    log.info("Scraping store info for %d stores (mode=%s, batch_size=%d)", len(targets), mode, BATCH_SIZE)
 
     now = datetime.now(timezone.utc)
     created = 0
@@ -139,11 +148,24 @@ def scrape_store_info(
     unchanged = 0
     failed = 0
 
-    for store in targets:
-        info = fetched.get(store.id)
-        if not info:
+    for i, store in enumerate(targets):
+        _throttle(i)
+
+        try:
+            info = _fetch_store_info(store.store_url)
+        except Exception as exc:
+            log.error("Unexpected error scraping store '%s' (id=%d): %s", store.name, store.id, exc)
             failed += 1
             continue
+
+        if not info:
+            log.error("No data scraped for store '%s' (id=%d): %s", store.name, store.id, store.store_url)
+            failed += 1
+            continue
+
+        missing = [f for f in ("address", "postal_code", "city", "latitude", "longitude") if not info.get(f)]
+        if missing:
+            log.warning("Incomplete data for '%s': missing %s — %s", store.name, ", ".join(missing), store.store_url)
 
         info["about_url"] = store.store_url
         detail = existing_details.get(store.id)
@@ -164,6 +186,9 @@ def scrape_store_info(
             else:
                 unchanged += 1
 
+        if (i + 1) % BATCH_SIZE == 0:
+            db.commit()
+
     db.commit()
     return {
         "stores_total": len(stores),
@@ -176,108 +201,260 @@ def scrape_store_info(
 
 
 # ---------------------------------------------------------------------------
-# Public API — deals (flyers only for Lidl)
+# Public API — deals (national: scraped once, stored on an anchor store)
 # ---------------------------------------------------------------------------
-
-def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
-    company = db.query(Company).filter(Company.id == company_id).first()
-    if company is None:
-        raise ValueError(f"Company {company_id} not found")
-
-    store = db.query(Store).filter(
-        Store.company_id == company_id, Store.id == store_id
-    ).first()
-    if store is None:
-        raise ValueError(f"Store {store_id} not found for company {company_id}")
-
-    flyers_data = _fetch_current_flyers()
-    saved = 0
-    for fl in flyers_data:
-        if _save_flyer(db, store, fl):
-            saved += 1
-
-    return {
-        "company_id": company.id,
-        "company_name": company.name,
-        "store_id": store.id,
-        "store_name": store.name,
-        "deals_found": 0,
-        "deals_created": 0,
-        "flyers_found": len(flyers_data),
-        "flyers_created": saved,
-    }
-
 
 def scrape_company_store_deals(db: Session, company_id: int) -> dict:
     company = db.query(Company).filter(Company.id == company_id).first()
     if company is None:
         raise ValueError(f"Company {company_id} not found")
 
-    stores = db.query(Store).filter(
-        Store.company_id == company_id
-    ).order_by(Store.id).all()
-    flyers_data = _fetch_current_flyers()
-
-    totals: dict[str, int | str] = {
-        "company_id": company.id,
-        "company_name": company.name,
-        "stores_checked": len(stores),
-        "stores_with_deals": 0,
-        "deals_found": 0,
-        "deals_created": 0,
-        "flyers_found": len(flyers_data),
-        "flyers_created": 0,
-    }
-
-    for fl in flyers_data:
-        existing_store_ids = set(
-            sid for (sid,) in db.query(Flyer.store_id).filter(
-                Flyer.url == fl["url"],
-                Flyer.store_id.in_([s.id for s in stores]),
-            ).all()
-        )
-        for store in stores:
-            if store.id in existing_store_ids:
-                continue
-            flyer = Flyer(
-                store_id=store.id,
-                url=fl["url"],
-                valid_from=fl.get("valid_from"),
-                valid_to=fl.get("valid_to"),
-                week_number=fl.get("week_number"),
-            )
-            db.add(flyer)
-            totals["flyers_created"] += 1
-
-    db.commit()
-    return totals
-
-
-def scrape_first_store_deals(db: Session) -> dict:
-    store = (
+    anchor = (
         db.query(Store)
-        .join(Company)
-        .filter(Company.slug == COMPANY_SLUG)
+        .filter(Store.company_id == company_id)
         .order_by(Store.id)
         .first()
     )
-    if store is None:
-        raise ValueError("No Lidl store found")
+    if anchor is None:
+        raise ValueError("No Lidl stores found — run /scrape/lidl/stores first")
+
+    pages = _discover_campaign_pages()
+    deals: dict[str, dict] = {}
+    pages_scraped = 0
+
+    for i, page_url in enumerate(pages):
+        _throttle(i)
+        page_deals = _fetch_campaign_deals(page_url)
+        if page_deals is None:
+            continue
+        pages_scraped += 1
+        for deal in page_deals:
+            deals.setdefault(deal["external_id"], deal)
+
+    created = _save_deals(db, anchor, list(deals.values()))
 
     flyers_data = _fetch_current_flyers()
-    saved = 0
-    for fl in flyers_data:
-        if _save_flyer(db, store, fl):
-            saved += 1
+    flyers_created = sum(1 for fl in flyers_data if _save_flyer(db, anchor, fl))
 
     return {
-        "store_id": store.id,
-        "store_name": store.name,
-        "deals_found": 0,
-        "deals_created": 0,
+        "company_id": company.id,
+        "company_name": company.name,
+        "national_deals": True,
+        "anchor_store_id": anchor.id,
+        "campaign_pages_found": len(pages),
+        "campaign_pages_scraped": pages_scraped,
+        "deals_found": len(deals),
+        "deals_created": created,
         "flyers_found": len(flyers_data),
-        "flyers_created": saved,
+        "flyers_created": flyers_created,
     }
+
+
+def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
+    store = db.query(Store).filter(
+        Store.company_id == company_id, Store.id == store_id
+    ).first()
+    if store is None:
+        raise ValueError(f"Store {store_id} not found for company {company_id}")
+
+    # Lidl deals are identical in every store, so a per-store scrape is the
+    # national scrape.
+    return scrape_company_store_deals(db, company_id)
+
+
+def scrape_first_store_deals(db: Session) -> dict:
+    company = db.query(Company).filter(Company.slug == COMPANY_SLUG).first()
+    if company is None:
+        raise ValueError("Lidl company not found")
+    return scrape_company_store_deals(db, company.id)
+
+
+# ---------------------------------------------------------------------------
+# Deals: campaign page discovery & parsing
+# ---------------------------------------------------------------------------
+
+def _throttle(index: int) -> None:
+    if index == 0:
+        return
+    if index % BATCH_SIZE == 0:
+        pause = random.uniform(*BATCH_PAUSE)
+        log.info("Batch of %d done (%d requests so far), pausing %.1fs", BATCH_SIZE, index, pause)
+        time.sleep(pause)
+    else:
+        time.sleep(random.uniform(*REQUEST_DELAY))
+
+
+def _fetch_html(url: str, attempts: int = 2) -> str | None:
+    for attempt in range(attempts):
+        try:
+            resp = httpx.get(url, timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            resp.raise_for_status()
+            return resp.text
+        except httpx.HTTPError as exc:
+            log.warning("HTTP error fetching %s (attempt %d): %s", url, attempt + 1, exc)
+            if attempt + 1 < attempts:
+                time.sleep(random.uniform(3.0, 6.0))
+    return None
+
+
+def _discover_campaign_pages() -> list[str]:
+    html = _fetch_html(f"{LIDL_BASE}/")
+    if not html:
+        raise ValueError("Could not fetch Lidl homepage to discover campaign pages")
+
+    hrefs = sorted(set(CAMPAIGN_LINK_PATTERN.findall(html)))
+    pages = [f"{LIDL_BASE}{href}" for href in hrefs]
+    log.info("Discovered %d Lidl campaign pages", len(pages))
+    return pages
+
+
+def _fetch_campaign_deals(page_url: str) -> list[dict] | None:
+    html = _fetch_html(page_url)
+    if not html:
+        return None
+
+    category = _extract_page_title(html)
+    deals = []
+    for blob in GRID_DATA_PATTERN.findall(html):
+        try:
+            tile = json.loads(html_lib.unescape(blob))
+            deal = _tile_to_deal(tile, category, page_url)
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+            log.warning("Skipping malformed product tile on %s: %s", page_url, exc)
+            continue
+        if deal:
+            deals.append(deal)
+
+    log.info("Campaign page '%s': %d deals — %s", category or "?", len(deals), page_url)
+    return deals
+
+
+def _extract_page_title(html: str) -> str | None:
+    m = re.search(r"<title>([^<]+)</title>", html)
+    if not m:
+        return None
+    return html_lib.unescape(m.group(1)).split("|")[0].strip() or None
+
+
+def _tile_to_deal(tile: dict, category: str | None, page_url: str) -> dict | None:
+    product_id = tile.get("productId")
+    name = tile.get("title") or tile.get("fullTitle")
+    if not product_id or not name:
+        return None
+
+    region = (tile.get("regionsPrices") or {}).get("1") or {}
+    price_node = None
+    is_membership = False
+    if isinstance(region.get("currentPrice"), dict):
+        price_node = region["currentPrice"]
+    elif isinstance(region.get("currentLidlPlusPrice"), dict):
+        price_node = region["currentLidlPlusPrice"].get("price")
+        is_membership = True
+    if not isinstance(price_node, dict):
+        price_node = tile.get("price") if isinstance(tile.get("price"), dict) else None
+
+    if not price_node:
+        return None
+
+    deal_price = price_node.get("price")
+    discount = price_node.get("discount") or {}
+    original_price = price_node.get("oldPrice") or discount.get("deletedPrice")
+    deal_text = discount.get("discountText")
+    valid_to = _parse_iso(price_node.get("endDate"))
+
+    # Only time-bounded or discounted prices are deals; skip evergreen assortment.
+    if deal_price is None or (original_price is None and not deal_text and valid_to is None):
+        return None
+
+    brand = tile.get("brand") or {}
+    brand_name = brand.get("name") if brand.get("showBrand") else None
+
+    image = tile.get("image")
+    if not image:
+        image_list = tile.get("imageList_V1") or []
+        image = image_list[0].get("image") if image_list else None
+
+    keyfacts = tile.get("keyfacts") or {}
+    description = _strip_html(keyfacts.get("description"))
+
+    canonical = tile.get("canonicalUrl")
+    source_url = f"{LIDL_BASE}{canonical}" if canonical else page_url
+
+    return {
+        "external_id": f"lidl:deal:{product_id}",
+        "name": name,
+        "brand": brand_name,
+        "size": (price_node.get("packaging") or {}).get("text"),
+        "description": description,
+        "category": category,
+        "image_url": image,
+        "original_price": float(original_price) if original_price is not None else None,
+        "deal_price": float(deal_price),
+        "deal_text": deal_text,
+        "is_membership_price": is_membership,
+        "comparison_price": (price_node.get("basePrice") or {}).get("text"),
+        "valid_from": _parse_iso(price_node.get("startDate")),
+        "valid_to": valid_to,
+        "source_url": source_url,
+    }
+
+
+def _strip_html(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = re.sub(r"<[^>]+>", " ", html_lib.unescape(value))
+    return " ".join(text.split()) or None
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _save_deals(db: Session, store: Store, parsed: list[dict]) -> int:
+    if not parsed:
+        return 0
+
+    ext_ids = [p["external_id"] for p in parsed]
+    existing = {
+        d.external_id: d
+        for d in db.query(Deal).filter(Deal.external_id.in_(ext_ids)).all()
+    }
+
+    now = datetime.now(timezone.utc)
+    created = 0
+
+    for item in parsed:
+        deal = existing.get(item["external_id"])
+        if deal is None:
+            deal = Deal(store_id=store.id, chain=store.chain, external_id=item["external_id"], name=item["name"])
+            db.add(deal)
+            created += 1
+
+        deal.store_id = store.id
+        deal.chain = store.chain
+        deal.name = item["name"]
+        deal.brand = item["brand"]
+        deal.size = item["size"]
+        deal.description = item["description"]
+        deal.category = item["category"]
+        deal.image_url = item["image_url"]
+        deal.original_price = item["original_price"]
+        deal.deal_price = item["deal_price"]
+        deal.deal_text = item["deal_text"]
+        deal.is_membership_price = bool(item["is_membership_price"])
+        deal.comparison_price = item["comparison_price"]
+        deal.valid_from = item["valid_from"]
+        deal.valid_to = item["valid_to"]
+        deal.source_url = item["source_url"]
+        deal.scraped_at = now
+
+    db.commit()
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -372,53 +549,21 @@ def _humanize_slug(slug: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Store info: concurrent fetch
+# Store info: fetch & parse
 # ---------------------------------------------------------------------------
 
-def _fetch_store_infos_concurrent(about_urls: dict[int, str]) -> dict[int, dict]:
-    results: dict[int, dict] = {}
+def _fetch_store_info(store_url: str) -> dict | None:
+    html = _fetch_html(store_url)
+    if html:
+        info = _parse_store_page(BeautifulSoup(html, "lxml"))
+        if info:
+            return info
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as pool:
-        future_to_id = {
-            pool.submit(_fetch_and_parse_store_info, url): store_id
-            for store_id, url in about_urls.items()
-        }
-        for future in as_completed(future_to_id):
-            store_id = future_to_id[future]
-            try:
-                info = future.result()
-                if info:
-                    results[store_id] = info
-            except Exception as exc:
-                log.error("Fetch crashed for %s: %s", about_urls[store_id], exc)
-
-    failed_ids = [sid for sid in about_urls if sid not in results]
-    if failed_ids:
-        log.info("Retrying %d stores with browser rendering", len(failed_ids))
-        for store_id in failed_ids:
-            url = about_urls[store_id]
-            html = _fetch_with_browser(url)
-            if not html:
-                continue
-            info = _parse_store_page(BeautifulSoup(html, "lxml"))
-            if info:
-                results[store_id] = info
-
-    return results
-
-
-def _fetch_and_parse_store_info(store_url: str) -> dict | None:
-    try:
-        resp = httpx.get(
-            store_url, timeout=30.0, follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-        )
-        resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        log.warning("HTTP error fetching %s: %s", store_url, exc)
+    log.info("Static fetch failed, falling back to browser: %s", store_url)
+    html = _fetch_with_browser(store_url)
+    if not html:
         return None
-
-    return _parse_store_page(BeautifulSoup(resp.text, "lxml"))
+    return _parse_store_page(BeautifulSoup(html, "lxml"))
 
 
 def _fetch_with_browser(url: str) -> str | None:

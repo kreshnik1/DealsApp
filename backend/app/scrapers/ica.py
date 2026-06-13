@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, Deal, Flyer, Store
+from app.db.models import Company, Deal, Flyer, Product, Store
 from app.db.models.store_detail import StoreDetail
 from app.dependencies import get_or_create_company
 
@@ -23,7 +24,10 @@ COMPANY_SLUG = "ica"
 ICA_STORES_URL = "https://www.ica.se/butiker/"
 ICA_OFFERS_PREFIX = "https://www.ica.se/erbjudanden/"
 
-MAX_CONCURRENT_REQUESTS = 15
+# Polite scraping: fetch a small batch, then pause before the next one.
+STORE_INFO_BATCH_SIZE = 5
+STORE_INFO_REQUEST_DELAY = (1.0, 2.5)
+STORE_INFO_BATCH_PAUSE = (6.0, 12.0)
 
 FLYER_DIR = Path(os.environ.get("FLYER_DIR", "data/flyers"))
 FLYER_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,36 +154,69 @@ def scrape_store_info(
         ).all()
     }
 
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(headless=True)
+    log.info("Scraping store info for %d stores (mode=%s, batch_size=%d)", len(targets), mode, STORE_INFO_BATCH_SIZE)
+
+    # Coordinate/address fallback: the store directory lists lat/lng for every store.
+    slim_by_account: dict[str, dict] = {}
     try:
-        for store in targets:
-            info = _fetch_store_info_from_page(store.store_url, browser)
-            if not info:
-                failed += 1
-                continue
+        slim_by_account = {str(s["accountNumber"]): s for s in _fetch_slim_stores() if s.get("accountNumber")}
+    except Exception as exc:
+        log.warning("Could not fetch slim store list for fallback data: %s", exc)
 
-            info["about_url"] = store.store_url
-            detail = existing_details.get(store.id)
+    for i, store in enumerate(targets):
+        _throttle(i)
 
-            if detail is None:
-                detail = StoreDetail(store_id=store.id)
+        account_number = (store.external_id or "").removeprefix("ica:")
+
+        try:
+            info = _fetch_store_info_static(store.store_url)
+            if info is None:
+                log.info("Static fetch failed, falling back to browser: %s", store.store_url)
+                info = _fetch_store_info_from_page(store.store_url)
+        except Exception as exc:
+            log.error("Unexpected error scraping store '%s' (id=%d): %s", store.name, store.id, exc)
+            info = None
+
+        if not info:
+            # Some stores link to their own external website instead of an
+            # ica.se page; the store directory still has address + coordinates.
+            info = {}
+            _apply_slim_fallback(info, slim_by_account.get(account_number))
+            if info:
+                log.info("Using store directory data for '%s' (page had none): %s", store.name, store.store_url)
+
+        if not info:
+            log.error("No data scraped for store '%s' (id=%d): %s", store.name, store.id, store.store_url)
+            failed += 1
+            continue
+
+        _apply_slim_fallback(info, slim_by_account.get(account_number))
+
+        missing = [f for f in ("address", "postal_code", "city", "latitude", "longitude") if not info.get(f)]
+        if missing:
+            log.warning("Incomplete data for '%s': missing %s — %s", store.name, ", ".join(missing), store.store_url)
+
+        info["about_url"] = store.store_url
+        detail = existing_details.get(store.id)
+
+        if detail is None:
+            detail = StoreDetail(store_id=store.id)
+            _apply_info(detail, info)
+            detail.scraped_at = now
+            detail.updated_at = now
+            db.add(detail)
+            created += 1
+        else:
+            detail.scraped_at = now
+            if _has_changes(detail, info):
                 _apply_info(detail, info)
-                detail.scraped_at = now
                 detail.updated_at = now
-                db.add(detail)
-                created += 1
+                updated += 1
             else:
-                detail.scraped_at = now
-                if _has_changes(detail, info):
-                    _apply_info(detail, info)
-                    detail.updated_at = now
-                    updated += 1
-                else:
-                    unchanged += 1
-    finally:
-        browser.close()
-        pw.stop()
+                unchanged += 1
+
+        if (i + 1) % STORE_INFO_BATCH_SIZE == 0:
+            db.commit()
 
     db.commit()
     return {
@@ -208,7 +245,7 @@ def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
         raise ValueError(f"Store {store_id} has no weekly_deals_url")
 
     parsed, flyer_url, week_number = _fetch_and_parse_store_deals(store.weekly_deals_url)
-    created = _save_deals(db, store, parsed)
+    deals_created, products_created = _save_deals(db, store, parsed)
 
     pdf_path, file_size = None, None
     if flyer_url and store.external_id:
@@ -221,7 +258,9 @@ def scrape_store_deals(db: Session, company_id: int, store_id: int) -> dict:
         "store_id": store.id,
         "store_name": store.name,
         "deals_found": len(parsed),
-        "deals_created": created,
+        "deals_created": deals_created,
+        "products_found": sum(len(d.get("_eans", [])) for d in parsed),
+        "products_created": products_created,
         "flyer_url": flyer_url,
         "week_number": week_number,
     }
@@ -241,6 +280,8 @@ def scrape_company_store_deals(db: Session, company_id: int) -> dict:
         "stores_with_deals": 0,
         "deals_found": 0,
         "deals_created": 0,
+        "products_found": 0,
+        "products_created": 0,
         "flyers_downloaded": 0,
     }
 
@@ -262,7 +303,10 @@ def scrape_company_store_deals(db: Session, company_id: int) -> dict:
                 continue
             totals["stores_with_deals"] += 1
             totals["deals_found"] += len(parsed)
-            totals["deals_created"] += _save_deals(db, store, parsed)
+            totals["products_found"] += sum(len(d.get("_eans", [])) for d in parsed)
+            deals_created, products_created = _save_deals(db, store, parsed)
+            totals["deals_created"] += deals_created
+            totals["products_created"] += products_created
 
             if flyer_url and store.external_id:
                 pdf_path, file_size = _download_flyer(flyer_url, store.external_id)
@@ -288,7 +332,7 @@ def scrape_first_store_deals(db: Session) -> dict:
         raise ValueError("No ICA store with weekly_deals_url found")
 
     parsed, flyer_url, week_number = _fetch_and_parse_store_deals(store.weekly_deals_url)
-    created = _save_deals(db, store, parsed)
+    deals_created, products_created = _save_deals(db, store, parsed)
 
     pdf_path, file_size = None, None
     if flyer_url and store.external_id:
@@ -299,7 +343,9 @@ def scrape_first_store_deals(db: Session) -> dict:
         "store_id": store.id,
         "store_name": store.name,
         "deals_found": len(parsed),
-        "deals_created": created,
+        "deals_created": deals_created,
+        "products_found": sum(len(d.get("_eans", [])) for d in parsed),
+        "products_created": products_created,
         "flyer_url": flyer_url,
         "week_number": week_number,
     }
@@ -309,7 +355,95 @@ def scrape_first_store_deals(db: Session) -> dict:
 # Store discovery: __INITIAL_DATA__ extraction
 # ---------------------------------------------------------------------------
 
+def _throttle(index: int) -> None:
+    if index == 0:
+        return
+    if index % STORE_INFO_BATCH_SIZE == 0:
+        pause = random.uniform(*STORE_INFO_BATCH_PAUSE)
+        log.info("Batch of %d done (%d stores so far), pausing %.1fs", STORE_INFO_BATCH_SIZE, index, pause)
+        time.sleep(pause)
+    else:
+        time.sleep(random.uniform(*STORE_INFO_REQUEST_DELAY))
+
+
+def _extract_embedded_json(html: str, key: str) -> str | None:
+    """Extract the JSON object or array following '"key":' via bracket matching.
+
+    ICA pages embed window.__INITIAL_DATA__ server-side, but the full blob
+    contains JS literals (undefined, new Map(...)), so only the needed
+    fragment is extracted and parsed.
+    """
+    idx = html.find(f'"{key}":')
+    if idx == -1:
+        return None
+    start = idx + len(key) + 3
+    while start < len(html) and html[start] in " \t\r\n":
+        start += 1
+    if start >= len(html) or html[start] not in "{[":
+        return None
+
+    open_char = html[start]
+    close_char = "}" if open_char == "{" else "]"
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(html)):
+        c = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c == open_char:
+                depth += 1
+            elif c == close_char:
+                depth -= 1
+                if depth == 0:
+                    return html[start:i + 1]
+    return None
+
+
+def _parse_embedded_json(html: str, key: str):
+    fragment = _extract_embedded_json(html, key)
+    if fragment is None:
+        return None
+    fragment = re.sub(r":\s*undefined\b", ":null", fragment)
+    try:
+        return json.loads(fragment)
+    except ValueError as exc:
+        log.warning("Failed to parse embedded JSON for key '%s': %s", key, exc)
+        return None
+
+
+def _fetch_html(url: str, attempts: int = 2) -> str | None:
+    for attempt in range(attempts):
+        try:
+            resp = httpx.get(url, timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            resp.raise_for_status()
+            return resp.text
+        except httpx.HTTPError as exc:
+            log.warning("HTTP error fetching %s (attempt %d): %s", url, attempt + 1, exc)
+            if attempt + 1 < attempts:
+                time.sleep(random.uniform(3.0, 6.0))
+    return None
+
+
 def _fetch_slim_stores() -> list[dict]:
+    html = _fetch_html(ICA_STORES_URL)
+    if html:
+        slim = _parse_embedded_json(html, "slimStores")
+        if isinstance(slim, list) and slim:
+            log.info("Discovered %d ICA stores from static __INITIAL_DATA__", len(slim))
+            return slim
+
+    log.info("Static slim store extraction failed, falling back to browser")
+    return _fetch_slim_stores_browser()
+
+
+def _fetch_slim_stores_browser() -> list[dict]:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page(user_agent=USER_AGENT)
@@ -341,6 +475,38 @@ def _fetch_slim_stores() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Store info: from individual store page __INITIAL_DATA__
 # ---------------------------------------------------------------------------
+
+def _fetch_store_info_static(store_url: str) -> dict | None:
+    html = _fetch_html(store_url)
+    if not html:
+        return None
+    model = _parse_embedded_json(html, "storeInfoModel")
+    if not isinstance(model, dict) or not model:
+        log.warning("No storeInfoModel in static page: %s", store_url)
+        return None
+    return _model_to_info(model)
+
+
+def _apply_slim_fallback(info: dict, slim: dict | None) -> None:
+    if not slim:
+        return
+
+    if not info.get("latitude") and slim.get("lat"):
+        try:
+            info["latitude"] = float(slim["lat"])
+            info["longitude"] = float(slim["lng"])
+        except (TypeError, ValueError, KeyError):
+            info.pop("latitude", None)
+
+    addr = slim.get("address") or {}
+    if isinstance(addr, dict):
+        if not info.get("address") and addr.get("street"):
+            info["address"] = addr["street"]
+        if not info.get("postal_code") and addr.get("postalCode"):
+            info["postal_code"] = str(addr["postalCode"]).replace(" ", "")
+        if not info.get("city") and addr.get("city"):
+            info["city"] = addr["city"]
+
 
 def _fetch_store_info_from_page(store_url: str, browser=None) -> dict | None:
     own_browser = browser is None
@@ -376,9 +542,11 @@ def _fetch_store_info_from_page(store_url: str, browser=None) -> dict | None:
 
 
 def _model_to_info(model: dict) -> dict:
+    # Fields can be present but explicitly null in ICA's JSON, so `or {}`
+    # rather than .get() defaults.
     info: dict = {}
 
-    addr = model.get("address", {})
+    addr = model.get("address") or {}
     if addr.get("streetAddress"):
         info["address"] = addr["streetAddress"]
     if addr.get("postalCode"):
@@ -386,11 +554,11 @@ def _model_to_info(model: dict) -> dict:
     if addr.get("city"):
         info["city"] = addr["city"]
 
-    contact = model.get("contact", {})
+    contact = model.get("contact") or {}
     if contact.get("phoneNumber"):
         info["phone"] = contact["phoneNumber"]
 
-    coords = model.get("coordinates", {})
+    coords = model.get("coordinates") or {}
     if coords.get("xDecimal"):
         info["latitude"] = float(coords["xDecimal"])
     if coords.get("yDecimal"):
@@ -399,9 +567,9 @@ def _model_to_info(model: dict) -> dict:
     if model.get("findUsUrl"):
         info["google_maps_url"] = model["findUsUrl"]
 
-    hours = model.get("openingHours", {})
-    regular = _convert_ica_hours(hours.get("regularOpeningHours", []))
-    special = _convert_ica_hours(hours.get("deviationOpeningHours", []))
+    hours = model.get("openingHours") or {}
+    regular = _convert_ica_hours(hours.get("regularOpeningHours") or [])
+    special = _convert_ica_hours(hours.get("deviationOpeningHours") or [])
 
     if regular:
         info["opening_hours"] = json.dumps(regular, ensure_ascii=False)
@@ -556,6 +724,12 @@ def _offer_to_deal(offer: dict, source_url: str) -> dict | None:
     if details.get("isSelfScan"):
         extra_parts.append("Gäller vid självscanning")
 
+    eans = [
+        {"ean": e["id"], "name": e.get("articleDescription", ""), "image": e.get("image")}
+        for e in (offer.get("eans") or [])
+        if e.get("id")
+    ]
+
     return {
         "external_id": f"ica:deal:{offer['id']}",
         "name": name,
@@ -571,6 +745,7 @@ def _offer_to_deal(offer: dict, source_url: str) -> dict | None:
         "deal_text": deal_text,
         "comparison_price": comparison_price,
         "extra_info": " | ".join(extra_parts) if extra_parts else None,
+        "_eans": eans,
     }
 
 
@@ -663,10 +838,10 @@ def _save_flyer(db: Session, store: Store, flyer_url: str | None, pdf_path: str 
 # Deals: DB persistence
 # ---------------------------------------------------------------------------
 
-def _save_deals(db: Session, store: Store, parsed: list[dict]) -> int:
+def _save_deals(db: Session, store: Store, parsed: list[dict]) -> tuple[int, int]:
     parsed = _dedupe(parsed)
     if not parsed:
-        return 0
+        return 0, 0
 
     ext_ids = [p["external_id"] for p in parsed if p["external_id"]]
     existing = {
@@ -700,6 +875,62 @@ def _save_deals(db: Session, store: Store, parsed: list[dict]) -> int:
         deal.extra_info = item.get("extra_info")
         deal.source_url = store.weekly_deals_url
         deal.scraped_at = now
+
+    db.commit()
+
+    products_created = _save_products(db, store, parsed)
+    return created, products_created
+
+
+def _save_products(db: Session, store: Store, parsed_deals: list[dict]) -> int:
+    all_items: list[dict] = []
+    for deal_info in parsed_deals:
+        eans = deal_info.get("_eans") or []
+        for ean in eans:
+            all_items.append({
+                "ean": ean["ean"],
+                "name": ean["name"],
+                "image": ean.get("image"),
+                "brand": deal_info.get("brand"),
+                "size": deal_info.get("size"),
+                "deal_text": deal_info.get("deal_text"),
+                "is_membership_price": deal_info.get("is_membership_price", False),
+                "comparison_price": deal_info.get("comparison_price"),
+            })
+
+    if not all_items:
+        return 0
+
+    ext_ids = [f"ica:product:{store.id}:{item['ean']}" for item in all_items]
+    existing = {
+        p.external_id: p
+        for p in db.query(Product).filter(Product.external_id.in_(ext_ids)).all()
+    }
+
+    now = datetime.now(timezone.utc)
+    created = 0
+
+    for item in all_items:
+        ext_id = f"ica:product:{store.id}:{item['ean']}"
+        product = existing.get(ext_id)
+        if product is None:
+            product = Product(
+                store_id=store.id,
+                external_id=ext_id,
+                name=item["name"],
+            )
+            db.add(product)
+            created += 1
+
+        product.name = item["name"]
+        product.brand = item.get("brand")
+        product.size = item.get("size")
+        product.image_url = item.get("image")
+        product.deal_text = item.get("deal_text")
+        product.is_membership_price = bool(item.get("is_membership_price"))
+        product.comparison_price = item.get("comparison_price")
+        product.source_url = store.weekly_deals_url
+        product.scraped_at = now
 
     db.commit()
     return created

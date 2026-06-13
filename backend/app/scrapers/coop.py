@@ -4,9 +4,9 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +30,16 @@ COMPANY_SLUG = "coop"
 COOP_SITEMAP_URL = "https://www.coop.se/sitemap_pages.xml"
 COOP_STORE_PREFIX = "https://www.coop.se/butiker-erbjudanden/"
 
-MAX_CONCURRENT_REQUESTS = 15
+# Coop's own store API (the one www.coop.se uses client-side).
+COOP_STORE_API_BASE = "https://proxy.api.coop.se/external/store"
+# Public subscription key embedded in every coop.se page; refreshed automatically on 401.
+COOP_STORE_API_KEY_DEFAULT = "990520e65cc44eef89e9e9045b57f4e9"
+COOP_STORE_API_KEY_PATTERN = re.compile(r'"storeApiSubscriptionKey"\s*:\s*"([0-9a-f-]+)"')
+
+# Polite scraping: fetch a small batch, then pause before the next one.
+STORE_INFO_BATCH_SIZE = 5
+STORE_INFO_REQUEST_DELAY = (0.5, 1.5)
+STORE_INFO_BATCH_PAUSE = (4.0, 8.0)
 
 FLYER_DIR = Path(os.environ.get("FLYER_DIR", "data/flyers"))
 FLYER_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,6 +102,25 @@ def save_store_links(db: Session) -> int:
     company = get_or_create_company(db, COMPANY_NAME, COMPANY_SLUG)
     links = discover_store_links()
 
+    # Coop's sitemap contains stale entries (closed stores, renamed pages,
+    # in-store restaurants); keep only entries the store API knows about.
+    try:
+        by_path, by_slug = _build_api_indexes(_fetch_store_api_map())
+    except ValueError as exc:
+        log.warning("Skipping sitemap validation, Coop store API unavailable: %s", exc)
+    else:
+        valid: list[CoopStoreLink] = []
+        skipped: list[str] = []
+        for link in links:
+            path = _normalize_store_path(link.store_url)
+            if path in by_path or path.rsplit("/", 1)[-1] in by_slug:
+                valid.append(link)
+            else:
+                skipped.append(link.slug)
+        if skipped:
+            log.info("Skipping %d sitemap entries not in Coop store API: %s", len(skipped), skipped)
+        links = valid
+
     external_ids = [_store_external_id(link.concept, link.slug) for link in links]
     existing = {
         s.external_id: s
@@ -151,9 +179,6 @@ def scrape_store_info(db: Session, company_id: int, store_id: int | None = None,
             "stores_failed": 0,
         }
 
-    about_urls = {s.id: s.store_url.rstrip("/") + "/om-butiken/" for s in targets}
-    store_names = {s.id: s.name for s in targets}
-
     existing_details = {
         sd.store_id: sd
         for sd in db.query(StoreDetail).filter(
@@ -161,8 +186,9 @@ def scrape_store_info(db: Session, company_id: int, store_id: int | None = None,
         ).all()
     }
 
-    log.info("Scraping store info for %d stores (mode=%s, concurrency=%d)", len(targets), mode, MAX_CONCURRENT_REQUESTS)
-    fetched = _fetch_store_infos_concurrent(about_urls)
+    log.info("Scraping store info for %d stores (mode=%s, batch_size=%d)", len(targets), mode, STORE_INFO_BATCH_SIZE)
+
+    api_by_path, api_by_slug = _build_api_indexes(_fetch_store_api_map())
 
     now = datetime.now(timezone.utc)
     created = 0
@@ -170,20 +196,36 @@ def scrape_store_info(db: Session, company_id: int, store_id: int | None = None,
     unchanged = 0
     failed = 0
 
-    for store in targets:
-        info = fetched.get(store.id)
-        if not info:
-            log.error("No data scraped for store '%s' (id=%d): %s", store.name, store.id, about_urls[store.id])
+    for i, store in enumerate(targets):
+        _throttle(i)
+
+        # Full-path match first; fall back to slug, since rebranded stores keep
+        # their slug but move concept (e.g. /coop/x -> /coop-extra/x).
+        path = _normalize_store_path(store.store_url)
+        api_store = api_by_path.get(path) or api_by_slug.get(path.rsplit("/", 1)[-1])
+        if api_store is None:
+            log.error("Store '%s' (id=%d) not found in Coop store API: %s", store.name, store.id, store.store_url)
             failed += 1
             continue
 
-        _geocode(info, about_urls[store.id], store_names.get(store.id, ""))
+        try:
+            detail_data = _fetch_store_api_detail(api_store.get("ledgerAccountNumber"))
+            info = _api_store_to_info(api_store, detail_data)
+        except Exception as exc:
+            log.error("Unexpected error scraping store '%s' (id=%d): %s", store.name, store.id, exc)
+            failed += 1
+            continue
+
+        if not info:
+            log.error("No data for store '%s' (id=%d): %s", store.name, store.id, store.store_url)
+            failed += 1
+            continue
 
         missing = [f for f in ("address", "postal_code", "city", "latitude", "longitude") if not info.get(f)]
         if missing:
-            log.warning("Incomplete data for '%s': missing %s — %s", store.name, ", ".join(missing), about_urls[store.id])
+            log.warning("Incomplete data for '%s': missing %s — %s", store.name, ", ".join(missing), store.store_url)
 
-        info["about_url"] = about_urls[store.id]
+        info["about_url"] = store.store_url.rstrip("/") + "/om-butiken/"
         detail = existing_details.get(store.id)
 
         if detail is None:
@@ -202,6 +244,9 @@ def scrape_store_info(db: Session, company_id: int, store_id: int | None = None,
             else:
                 unchanged += 1
 
+        if (i + 1) % STORE_INFO_BATCH_SIZE == 0:
+            db.commit()
+
     db.commit()
     return {
         "stores_total": len(stores),
@@ -214,45 +259,208 @@ def scrape_store_info(db: Session, company_id: int, store_id: int | None = None,
 
 
 # ---------------------------------------------------------------------------
-# Store info: concurrent fetch
+# Store info: Coop store API
 # ---------------------------------------------------------------------------
 
-def _fetch_store_infos_concurrent(about_urls: dict[int, str]) -> dict[int, dict]:
-    results: dict[int, dict] = {}
+_store_api_key: str = COOP_STORE_API_KEY_DEFAULT
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as pool:
-        future_to_id = {
-            pool.submit(_fetch_and_parse_store_info, url): store_id
-            for store_id, url in about_urls.items()
-        }
-        for future in as_completed(future_to_id):
-            store_id = future_to_id[future]
-            try:
-                info = future.result()
-                if info:
-                    results[store_id] = info
-                else:
-                    log.warning("Static fetch returned no data: %s", about_urls[store_id])
-            except Exception as exc:
-                log.error("Static fetch crashed for %s: %s", about_urls[store_id], exc)
 
-    failed_ids = [sid for sid in about_urls if sid not in results]
-    if failed_ids:
-        log.info("Retrying %d stores with browser rendering: %s",
-                 len(failed_ids), [about_urls[sid] for sid in failed_ids])
-        for store_id in failed_ids:
-            url = about_urls[store_id]
-            html = _fetch_store_info_with_browser(url)
-            if not html:
-                log.error("Browser fetch also failed: %s", url)
+def _throttle(index: int) -> None:
+    if index == 0:
+        return
+    if index % STORE_INFO_BATCH_SIZE == 0:
+        pause = random.uniform(*STORE_INFO_BATCH_PAUSE)
+        log.info("Batch of %d done (%d stores so far), pausing %.1fs", STORE_INFO_BATCH_SIZE, index, pause)
+        time.sleep(pause)
+    else:
+        time.sleep(random.uniform(*STORE_INFO_REQUEST_DELAY))
+
+
+def _refresh_store_api_key() -> str | None:
+    try:
+        resp = httpx.get(
+            COOP_STORE_PREFIX,
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        )
+        resp.raise_for_status()
+        match = COOP_STORE_API_KEY_PATTERN.search(resp.text)
+        return match.group(1) if match else None
+    except httpx.HTTPError as exc:
+        log.error("Failed to refresh Coop store API key: %s", exc)
+        return None
+
+
+def _store_api_get(path: str, params: dict) -> httpx.Response | None:
+    global _store_api_key
+
+    url = f"{COOP_STORE_API_BASE}{path}"
+    for attempt in range(3):
+        try:
+            resp = httpx.get(
+                url,
+                params=params,
+                timeout=30.0,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Ocp-Apim-Subscription-Key": _store_api_key,
+                },
+            )
+        except httpx.HTTPError as exc:
+            log.warning("Coop store API request failed (attempt %d) %s: %s", attempt + 1, url, exc)
+            time.sleep(random.uniform(3.0, 6.0))
+            continue
+
+        if resp.status_code == 401:
+            log.info("Coop store API key rejected, refreshing from page config")
+            new_key = _refresh_store_api_key()
+            if new_key and new_key != _store_api_key:
+                _store_api_key = new_key
                 continue
-            info = _fetch_and_parse_store_info(url, html=html)
-            if info:
-                results[store_id] = info
-            else:
-                log.error("Parsing failed after browser render: %s", url)
+            log.error("Could not obtain a valid Coop store API key")
+            return None
 
-    return results
+        if resp.status_code == 429 or resp.status_code >= 500:
+            log.warning("Coop store API returned %d (attempt %d): %s", resp.status_code, attempt + 1, url)
+            time.sleep(random.uniform(5.0, 10.0))
+            continue
+
+        if resp.is_success:
+            return resp
+
+        log.error("Coop store API returned %d: %s", resp.status_code, url)
+        return None
+
+    return None
+
+
+def _fetch_store_api_map() -> list[dict]:
+    resp = _store_api_get("/stores/map", {"api-version": "v2", "conceptIds": "12,6,95", "invertFilter": "true"})
+    if resp is None:
+        raise ValueError("Coop store API unavailable, cannot scrape store info")
+    stores = resp.json()
+    log.info("Coop store API returned %d stores", len(stores))
+    return stores
+
+
+def _fetch_store_api_detail(ledger_account_number: str | None) -> dict | None:
+    if not ledger_account_number:
+        return None
+    resp = _store_api_get(
+        f"/stores/{ledger_account_number}",
+        {"api-version": "v5", "onlyVisibleOpeningHours": "true"},
+    )
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except ValueError as exc:
+        log.error("Coop store API returned invalid JSON for %s: %s", ledger_account_number, exc)
+        return None
+
+
+def _normalize_store_path(url: str) -> str:
+    path = re.sub(r"^https?://[^/]+", "", url or "")
+    return path.strip("/").lower()
+
+
+def _build_api_indexes(api_stores: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    by_path: dict[str, dict] = {}
+    slug_counts: dict[str, int] = {}
+    for s in api_stores:
+        if not s.get("url"):
+            continue
+        path = _normalize_store_path(s["url"])
+        by_path[path] = s
+        slug = path.rsplit("/", 1)[-1]
+        slug_counts[slug] = slug_counts.get(slug, 0) + 1
+
+    by_slug = {
+        path.rsplit("/", 1)[-1]: s
+        for path, s in by_path.items()
+        if slug_counts[path.rsplit("/", 1)[-1]] == 1
+    }
+    return by_path, by_slug
+
+
+def _api_store_to_info(api_store: dict, detail_data: dict | None) -> dict:
+    # The detail endpoint repeats the map fields; prefer it when available.
+    source = detail_data or api_store
+    info: dict = {}
+
+    for src_field, dest_field in (("address", "address"), ("city", "city"), ("phone", "phone")):
+        value = source.get(src_field) or api_store.get(src_field)
+        if value:
+            info[dest_field] = value
+
+    postal = source.get("postalCode") or api_store.get("postalCode")
+    if postal:
+        info["postal_code"] = str(postal).replace(" ", "")
+
+    lat = source.get("latitude") or api_store.get("latitude")
+    lng = source.get("longitude") or api_store.get("longitude")
+    if lat and lng:
+        info["latitude"] = float(lat)
+        info["longitude"] = float(lng)
+        info["google_maps_url"] = f"https://maps.google.com/?q={lat},{lng}"
+
+    if detail_data:
+        regular = _convert_api_hours(detail_data.get("openingHours") or [])
+        special = _convert_api_hours(detail_data.get("futureIrregularOpeningHours") or [], include_date=True)
+        if regular:
+            info["opening_hours"] = json.dumps(regular, ensure_ascii=False)
+        if special:
+            info["special_hours"] = json.dumps(special, ensure_ascii=False)
+
+    return info
+
+
+def _convert_api_hours(entries: list[dict], include_date: bool = False) -> list[dict]:
+    result = []
+    for entry in entries:
+        if entry.get("visibleForEndUser") is False:
+            continue
+        label = (entry.get("text") or "").strip()
+        if not label:
+            continue
+        is_closed = bool(entry.get("isClosed"))
+        item = {
+            "days": _expand_day_label(label),
+            "open": None if is_closed else _trim_time(entry.get("openFrom")),
+            "close": None if is_closed else _trim_time(entry.get("openTo")),
+        }
+        if include_date and entry.get("date"):
+            item["date"] = str(entry["date"])[:10]
+        result.append(item)
+    return result
+
+
+def _expand_day_label(label: str) -> list[str]:
+    label = label.replace("–", "-").replace("—", "-").strip()
+    if "-" in label:
+        start, end = label.split("-", 1)
+        start_idx = DAY_INDEX.get(start.strip().lower())
+        end_idx = DAY_INDEX.get(end.strip().lower())
+        if start_idx is not None and end_idx is not None:
+            days = []
+            i = start_idx
+            while True:
+                days.append(SWEDISH_DAYS[i])
+                if i == end_idx:
+                    break
+                i = (i + 1) % 7
+            return days
+    for day in SWEDISH_DAYS:
+        if label.lower() == day.lower():
+            return [day]
+    return [label]
+
+
+def _trim_time(val: str | None) -> str | None:
+    if not val:
+        return None
+    return val[:5]
 
 
 def _apply_info(detail: StoreDetail, info: dict) -> None:
@@ -268,214 +476,8 @@ def _has_changes(detail: StoreDetail, info: dict) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Store info: fetch & parse
-# ---------------------------------------------------------------------------
-
-def _fetch_and_parse_store_info(about_url: str, html: str | None = None) -> dict | None:
-    if html is None:
-        try:
-            resp = httpx.get(about_url, timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
-            resp.raise_for_status()
-            html = resp.text
-        except httpx.HTTPError as exc:
-            log.warning("HTTP error fetching %s: %s", about_url, exc)
-            return None
-
-    soup = BeautifulSoup(html, "lxml")
-
-    address_block = soup.select_one("div.Rc8wiCPU div.u-sizeFull div.u-marginTxxxsm")
-
-    info: dict = {}
-
-    if address_block:
-        _parse_address_block(address_block, info)
-    else:
-        log.warning("No address block found: %s", about_url)
-
-    maps_link = soup.select_one("a[href*='maps.google.com']")
-    if maps_link:
-        info["google_maps_url"] = maps_link.get("href")
-
-    phone_link = soup.select_one("a[href^='tel:']")
-    if phone_link:
-        info["phone"] = phone_link.get_text(strip=True)
-
-    _parse_opening_hours(soup, info)
-
-    return info if info else None
-
-
-def _fetch_store_info_with_browser(about_url: str) -> str | None:
-    log.info("Browser rendering: %s", about_url)
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page(user_agent=USER_AGENT)
-            try:
-                page.goto(about_url, wait_until="domcontentloaded", timeout=30_000)
-                page.wait_for_selector("div.Rc8wiCPU", timeout=10_000)
-                return page.content()
-            except PlaywrightTimeoutError:
-                log.warning("Browser timeout waiting for content: %s", about_url)
-                return None
-            finally:
-                page.close()
-                browser.close()
-    except Exception as exc:
-        log.error("Browser rendering failed for %s: %s", about_url, exc)
-        return None
-
-
-
-def _parse_address_block(block, info: dict) -> None:
-    for hidden in block.select("span.u-hiddenVisually"):
-        hidden.decompose()
-
-    text = block.get_text("\n", strip=True)
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-
-    if len(lines) < 2:
-        return
-
-    info["address"] = lines[1]
-
-    for i, line in enumerate(lines[2:], start=2):
-        postal_city = re.match(r"(\d{3}\s?\d{2})\s+(.+)", line)
-        if postal_city:
-            info["postal_code"] = postal_city.group(1).replace(" ", "")
-            info["city"] = postal_city.group(2).strip()
-            return
-
-        postal_only = re.match(r"^(\d{3}\s?\d{2})$", line)
-        if postal_only:
-            info["postal_code"] = postal_only.group(1).replace(" ", "")
-            if i + 1 < len(lines):
-                info["city"] = lines[i + 1].strip()
-            return
-
-
-def _parse_opening_hours(soup, info: dict) -> None:
-    sections = soup.select("div.Rc8wiCPU")
-
-    for section in sections:
-        heading = section.select_one("h3")
-        if not heading:
-            continue
-        if "öppettider" not in heading.get_text(strip=True).lower():
-            continue
-
-        hours_container = section.select_one("div.u-sizeFull.u-lineHeightxLg")
-        if not hours_container:
-            continue
-
-        hour_groups = hours_container.find_all("div", recursive=False)
-        regular: list[str] = []
-        special: list[str] = []
-        target = regular
-
-        for group in hour_groups:
-            if "u-marginTsm" in (group.get("class") or []):
-                target = special
-
-            rows = group.select("div.u-flex.u-flexJustifySpaceBetween")
-            for row in rows:
-                day_el = row.select_one("div.Q3Ib28ir")
-                time_el = row.select_one("div.u-whitespaceNoWrap")
-                if day_el and time_el:
-                    day = day_el.get_text(strip=True)
-                    time_val = time_el.get_text(strip=True)
-                    target.append(_parse_hours_entry(day, time_val))
-
-        if regular:
-            info["opening_hours"] = json.dumps(regular, ensure_ascii=False)
-        if special:
-            info["special_hours"] = json.dumps(special, ensure_ascii=False)
-        break
-
-
 SWEDISH_DAYS = ["Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag", "Söndag"]
 DAY_INDEX = {d.lower(): i for i, d in enumerate(SWEDISH_DAYS)}
-
-
-def _parse_hours_entry(day_text: str, time_text: str) -> dict:
-    time_text = time_text.replace("–", "-").replace("—", "-").strip()
-    open_time, close_time = None, None
-    if time_text.lower() == "stängt":
-        open_time = None
-        close_time = None
-    elif "-" in time_text:
-        parts = time_text.split("-", 1)
-        open_time = _normalize_time(parts[0].strip())
-        close_time = _normalize_time(parts[1].strip())
-
-    day_text = day_text.replace("–", "-").replace("—", "-").strip()
-    if "-" in day_text:
-        start_day, end_day = day_text.split("-", 1)
-        start_idx = DAY_INDEX.get(start_day.strip().lower())
-        end_idx = DAY_INDEX.get(end_day.strip().lower())
-        if start_idx is not None and end_idx is not None:
-            days = []
-            i = start_idx
-            while True:
-                days.append(SWEDISH_DAYS[i])
-                if i == end_idx:
-                    break
-                i = (i + 1) % 7
-            return {"days": days, "open": open_time, "close": close_time}
-
-    return {"days": [day_text], "open": open_time, "close": close_time}
-
-
-def _normalize_time(val: str) -> str:
-    val = val.strip().replace(".", ":")
-    if ":" in val:
-        return val.zfill(5)
-    return f"{val.zfill(2)}:00"
-
-
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-
-
-def _geocode(info: dict, about_url: str = "", store_name: str = "") -> None:
-    address = info.get("address")
-    city = info.get("city")
-    if not address and not store_name:
-        return
-
-    queries = []
-    if address:
-        parts = [address]
-        if info.get("postal_code"):
-            parts.append(info["postal_code"])
-        if city:
-            parts.append(city)
-        parts.append("Sweden")
-        queries.append(", ".join(parts))
-    if store_name and city:
-        queries.append(f"{store_name}, {city}, Sweden")
-    if store_name:
-        queries.append(f"{store_name}, Sweden")
-
-    for query in queries:
-        try:
-            time.sleep(1.1)
-            resp = httpx.get(
-                NOMINATIM_URL,
-                params={"q": query, "format": "json", "limit": 1, "countrycodes": "se"},
-                headers={"User-Agent": "DealsApp/1.0"},
-                timeout=10.0,
-            )
-            results = resp.json()
-            if results:
-                info["latitude"] = float(results[0]["lat"])
-                info["longitude"] = float(results[0]["lon"])
-                return
-        except Exception as exc:
-            log.error("Geocoding request failed for query='%s' (%s): %s", query, about_url, exc)
-            return
-
-    log.warning("Geocoding returned no results for any query (%s): tried %s", about_url, queries)
 
 
 # ---------------------------------------------------------------------------

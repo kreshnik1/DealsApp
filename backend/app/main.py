@@ -4,8 +4,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.db.models import Company, Deal, Flyer, Product, Role, Store, StoreDetail, User  # noqa: F401
-from app.routers import auth, deals, scrape, stores
+from app.db.models import (  # noqa: F401
+    Company,
+    Deal,
+    Flyer,
+    InventoryItem,
+    Product,
+    Role,
+    ShoppingList,
+    ShoppingListItem,
+    Store,
+    StoreDetail,
+    User,
+)
+from app.routers import auth, deals, inventory, scrape, shopping_lists, stores
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)s — %(message)s")
 
@@ -22,6 +34,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(deals.router)
 app.include_router(stores.router)
+app.include_router(shopping_lists.router)
+app.include_router(inventory.router)
 app.include_router(scrape.router)
 
 

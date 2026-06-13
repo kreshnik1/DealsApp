@@ -10,3 +10,5 @@ from app.db.models.household_invite import HouseholdInvite
 from app.db.models.household_member import HouseholdMember
 from app.db.models.role import Role
 from app.db.models.user import User
+from app.db.models.shopping_list import ShoppingList, ShoppingListItem
+from app.db.models.inventory import InventoryItem
