@@ -11,6 +11,10 @@ struct StoresService: StoresServicing {
         try await client.send(.listStores(query))
     }
 
+    func fetchNearbyStores(_ query: NearbyStoresQuery) async throws -> [StoreDTO] {
+        try await client.send(.listNearbyStores(query))
+    }
+
     func fetchCompanyStores(
         companySlug: String,
         query: CompanyStoresQuery = CompanyStoresQuery()

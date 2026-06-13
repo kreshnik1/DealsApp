@@ -25,8 +25,12 @@ struct InventoryViewContainer: View {
 
                         Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(itemCountChipBackground)
 
-                    LazyVStack(spacing: AppTheme.Spacing.medium) {
+                    LazyVStack(spacing: AppTheme.Spacing.small) {
                         ForEach(viewModel.items) { item in
                             InventoryRowView(
                                 item: item,
@@ -65,8 +69,8 @@ struct InventoryViewContainer: View {
         .contentMargins(.top, AppTheme.Spacing.xLarge, for: .scrollContent)
         .contentMargins(.horizontal, AppTheme.Spacing.screenInset, for: .scrollContent)
         .contentMargins(.bottom, AppTheme.Spacing.xxLarge, for: .scrollContent)
-        .background(Color(uiColor: .systemBackground))
-        .overlay(alignment: .bottom) {
+        .breezeMainAppScreen()
+        .overlay(alignment: .top) {
             if let bannerState = viewModel.bannerState {
                 InventoryBannerView(
                     state: bannerState,
@@ -82,8 +86,8 @@ struct InventoryViewContainer: View {
                     }
                 )
                 .padding(.horizontal, 16)
-                .padding(.bottom, 104)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(.snappy(duration: 0.22, extraBounce: 0), value: viewModel.bannerState?.id)
@@ -137,5 +141,18 @@ struct InventoryViewContainer: View {
                 }
             }
         )
+    }
+
+    private var itemCountChipBackground: some View {
+        RoundedRectangle(cornerRadius: AppTheme.Radii.phone, style: .continuous)
+            .fill(AppTheme.Colors.panelFill.opacity(0.68))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radii.phone, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .glassEffect(
+                Glass.regular.tint(AppTheme.Colors.panelFillMuted.opacity(0.1)),
+                in: RoundedRectangle(cornerRadius: AppTheme.Radii.phone, style: .continuous)
+            )
     }
 }

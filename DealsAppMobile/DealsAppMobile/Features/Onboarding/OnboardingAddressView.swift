@@ -7,6 +7,9 @@ struct OnboardingAddressView: View {
     @StateObject private var locationManager = OnboardingLocationManager()
     @State private var showsText = false
     @State private var revealSequence = 0
+    @State private var addressResolutionTask: Task<Void, Never>?
+    @State private var focusTask: Task<Void, Never>?
+    @State private var revealTask: Task<Void, Never>?
     @Binding var address: String
     @Binding var locationCoordinates: UserLocationCoordinates?
 
@@ -45,7 +48,7 @@ struct OnboardingAddressView: View {
 
                             Spacer()
 
-                            if locationManager.isFetching {
+                            if locationManager.isFetchingCurrentLocation {
                                 ProgressView()
                                     .tint(AppTheme.Colors.accent)
                             }
@@ -90,6 +93,7 @@ struct OnboardingAddressView: View {
         }
         .onChange(of: locationManager.resolvedAddress) { _, newValue in
             guard let newValue else { return }
+            addressResolutionTask?.cancel()
             address = newValue
             locationCoordinates = locationManager.resolvedCoordinates
         }
@@ -101,7 +105,23 @@ struct OnboardingAddressView: View {
                 return
             }
 
+            locationManager.prepareForManualAddressEntry()
             locationCoordinates = nil
+            addressResolutionTask?.cancel()
+
+            guard trimmedValue.isEmpty == false else {
+                return
+            }
+
+            addressResolutionTask = Task {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard Task.isCancelled == false else { return }
+
+                let resolvedCoordinates = await locationManager.resolveTypedAddress(trimmedValue)
+                guard Task.isCancelled == false else { return }
+
+                locationCoordinates = resolvedCoordinates
+            }
         }
     }
 
@@ -114,12 +134,16 @@ struct OnboardingAddressView: View {
             return errorMessage
         }
 
+        if locationManager.isResolvingTypedAddress {
+            return "Checking address..."
+        }
+
         if locationManager.isResolved, let resolvedAddress = locationManager.resolvedAddress {
             return resolvedAddress
         }
 
         if trimmedAddress.isEmpty == false {
-            return "Address added"
+            return locationCoordinates == nil ? "Enter a full address to continue" : "Address verified"
         }
 
         return "Use your current location or enter it manually"
@@ -134,16 +158,18 @@ struct OnboardingAddressView: View {
     }
 
     private func handleOnAppear() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            if trimmedAddress.isEmpty {
-                addressFieldFocused = true
-            }
+        focusTask?.cancel()
+        focusTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard Task.isCancelled == false, trimmedAddress.isEmpty else { return }
+            addressFieldFocused = true
         }
     }
 
     private func runRevealSequence() {
         revealSequence += 1
         let sequence = revealSequence
+        revealTask?.cancel()
 
         guard isActive else {
             showsText = false
@@ -152,8 +178,9 @@ struct OnboardingAddressView: View {
 
         showsText = false
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard revealSequence == sequence, isActive else { return }
+        revealTask = Task {
+            try? await Task.sleep(for: .milliseconds(80))
+            guard Task.isCancelled == false, revealSequence == sequence, isActive else { return }
 
             withAnimation(.easeOut(duration: 0.62)) {
                 showsText = true

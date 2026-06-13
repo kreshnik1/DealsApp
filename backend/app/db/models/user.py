@@ -11,12 +11,17 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    hashed_password: Mapped[str] = mapped_column(String(255))
+    username: Mapped[str | None] = mapped_column(String(50), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    hashed_password: Mapped[str | None] = mapped_column(String(255))
     full_name: Mapped[str | None] = mapped_column(String(255))
     role_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("roles.id"), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    last_login_at: Mapped[datetime | None]
 
     role: Mapped["Role"] = relationship(back_populates="users")
+    auth_identities: Mapped[list["AuthIdentity"]] = relationship(back_populates="user")
+    household_memberships: Mapped[list["HouseholdMember"]] = relationship(back_populates="user")
+    created_households: Mapped[list["Household"]] = relationship(back_populates="created_by")
+    created_household_invites: Mapped[list["HouseholdInvite"]] = relationship(back_populates="created_by")

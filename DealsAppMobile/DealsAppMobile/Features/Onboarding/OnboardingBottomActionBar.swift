@@ -17,20 +17,18 @@ struct OnboardingBottomActionBar: View {
     }
 
     var body: some View {
-        VStack(spacing: AppTheme.Spacing.medium) {
-            Button(title, action: handleTap)
-                .buttonStyle(AppButtonStyle(variant: .primary))
-                .disabled(isDisabled)
-                .opacity(isDisabled ? 0.55 : 1)
+        GlassEffectContainer(spacing: 20) {
+            VStack(spacing: AppTheme.Spacing.medium) {
+                Button(title, action: handleTap)
+                    .buttonStyle(.glassProminent)
+                    .disabled(isDisabled)
+                    .opacity(isDisabled ? 0.55 : 1)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.top, AppTheme.Spacing.medium)
         .padding(.bottom, AppTheme.Spacing.medium)
-        .background {
-            Rectangle()
-                .fill(AppTheme.Colors.footerShade)
-                .ignoresSafeArea(edges: .bottom)
-        }
+        .background(.clear)
     }
 
     private func handleTap() {

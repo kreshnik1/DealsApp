@@ -8,58 +8,59 @@ struct ShoppingListRowView: View {
 
     var body: some View {
         HStack(spacing: AppTheme.Spacing.medium) {
-            Button(action: onToggleChecked) {
-                Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 24, weight: .regular))
-                    .foregroundStyle(item.isChecked ? AppTheme.Colors.accentStrong : AppTheme.Colors.secondaryText)
-            }
+            Button(
+                item.isChecked ? "Mark as not purchased" : "Mark as purchased",
+                systemImage: item.isChecked ? "checkmark.circle.fill" : "circle",
+                action: onToggleChecked
+            )
+            .labelStyle(.iconOnly)
             .buttonStyle(.plain)
-            .accessibilityLabel(item.isChecked ? "Mark as not purchased" : "Mark as purchased")
+            .foregroundStyle(item.isChecked ? AppTheme.Colors.accentStrong : AppTheme.Colors.secondaryText)
 
-            if item.imageURL != nil {
-                ShoppingListItemImageView(
-                    imageURL: item.imageURL,
-                    size: 56,
-                    cornerRadius: AppTheme.Radii.small
-                )
-                .accessibilityHidden(true)
-            }
+            Button(action: onEdit) {
+                HStack(spacing: AppTheme.Spacing.medium) {
+                    if item.imageURL != nil {
+                        ShoppingListItemImageView(
+                            imageURL: item.imageURL,
+                            size: 56,
+                            cornerRadius: AppTheme.Radii.small
+                        )
+                        .accessibilityHidden(true)
+                    }
 
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.small) {
-                Text(item.name)
-                    .breezeText(.bodyStrong, color: item.isChecked ? AppTheme.Colors.secondaryText : AppTheme.Colors.primaryText)
-                    .strikethrough(item.isChecked, color: AppTheme.Colors.tertiaryText)
-                    .multilineTextAlignment(.leading)
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.small) {
+                        Text(item.name)
+                            .breezeText(.bodyStrong, color: item.isChecked ? AppTheme.Colors.secondaryText : AppTheme.Colors.primaryText)
+                            .strikethrough(item.isChecked, color: AppTheme.Colors.tertiaryText)
+                            .multilineTextAlignment(.leading)
 
-                if metadataText.isEmpty == false {
-                    Text(metadataText)
-                        .breezeText(.meta, color: AppTheme.Colors.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                        if metadataText.isEmpty == false {
+                            Text(metadataText)
+                                .breezeText(.meta, color: AppTheme.Colors.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
                 }
             }
-
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
 
             Menu {
                 Button("Edit", systemImage: "pencil", action: onEdit)
                 Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(AppTheme.Colors.secondaryText)
                     .frame(width: 34, height: 34)
-                    .breezeSurface(
-                        fill: AppTheme.Colors.panelFillStrong,
-                        border: AppTheme.Colors.borderStrong,
-                        radius: AppTheme.Radii.phone
-                    )
             }
+            .buttonStyle(.glass)
             .accessibilityLabel("Item actions")
         }
-        .padding(18)
-        .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radii.large, style: .continuous))
-        .onTapGesture(perform: onEdit)
-        .breezeGlassPanel(.panel, cornerRadius: AppTheme.Radii.large)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .background(rowBackground)
     }
 
     private var metadataText: String {
@@ -80,5 +81,18 @@ struct ShoppingListRowView: View {
         }
 
         return parts.joined(separator: " · ")
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+            .fill(AppTheme.Colors.panelFill.opacity(0.72))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .glassEffect(
+                Glass.regular.tint(AppTheme.Colors.panelFillMuted.opacity(0.12)),
+                in: RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+            )
     }
 }

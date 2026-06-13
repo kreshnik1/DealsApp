@@ -44,6 +44,13 @@ private struct BreezeScreenModifier: ViewModifier {
     }
 }
 
+private struct BreezeMainAppScreenModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(AppThemeBackground())
+    }
+}
+
 private struct BreezeSurfaceModifier: ViewModifier {
     let fill: Color
     let border: Color
@@ -65,6 +72,10 @@ private struct BreezeSurfaceModifier: ViewModifier {
 extension View {
     func breezeScreen() -> some View {
         modifier(BreezeScreenModifier())
+    }
+
+    func breezeMainAppScreen() -> some View {
+        modifier(BreezeMainAppScreenModifier())
     }
 
     func breezeText(_ style: AppTextStyle, color: Color = AppTheme.Colors.primaryText) -> some View {

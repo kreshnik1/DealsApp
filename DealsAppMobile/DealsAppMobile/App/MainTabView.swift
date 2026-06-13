@@ -1,13 +1,13 @@
 import SwiftUI
 
 private enum AppTab: Hashable {
-    case feed
+    case home
     case list
     case inventory
 }
 
 struct MainTabView: View {
-    @State private var selectedTab: AppTab = .feed
+    @State private var selectedTab: AppTab = .home
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -15,9 +15,9 @@ struct MainTabView: View {
                 FeedView()
             }
             .tabItem {
-                Label("Feed", systemImage: "square.grid.2x2.fill")
+                Label("Home", systemImage: "house.fill")
             }
-            .tag(AppTab.feed)
+            .tag(AppTab.home)
 
             NavigationStack {
                 ShoppingListView()

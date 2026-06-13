@@ -49,24 +49,21 @@ struct StoreDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 if let shareURL {
                     ShareLink(item: shareURL) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 17, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: Circle())
+                        Label("Share store", systemImage: "square.and.arrow.up")
+                            .labelStyle(.iconOnly)
                     }
-                    .accessibilityLabel("Share store")
                 }
             }
         }
         .task(id: offersTaskID) {
             await loadOffers()
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .top) {
             if let toastState {
                 DealToastView(state: toastState)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 32)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(.snappy(duration: 0.22, extraBounce: 0), value: toastState?.id)
@@ -253,7 +250,7 @@ struct StoreDetailView: View {
                     await loadOffers(force: true)
                 }
             }
-            .buttonStyle(AppButtonStyle(variant: .secondary, fillsWidth: false))
+            .buttonStyle(.glass)
         }
         .padding(20)
         .breezeSurface(fill: AppTheme.Colors.panelFill, border: AppTheme.Colors.borderStrong, radius: AppTheme.Radii.xLarge)
@@ -727,27 +724,32 @@ struct StoreDetailView: View {
         }
     }
 
+    @ViewBuilder
     private func offerAddToListButton(for offer: DealDTO) -> some View {
         let isAdded = recentlyAddedOfferIDs.contains(offer.id)
 
-        return Button {
-            addOfferToList(offer)
-        } label: {
-            Label(isAdded ? "Added" : "Add to list", systemImage: isAdded ? "checkmark" : "plus")
-                .breezeText(.bodyStrong, color: isAdded ? AppTheme.Colors.accentStrong : AppTheme.Colors.primaryText)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
+        if isAdded {
+            Button {
+                addOfferToList(offer)
+            } label: {
+                Label("Added", systemImage: "checkmark")
+                    .breezeText(.bodyStrong, color: AppTheme.Colors.accentStrong)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .buttonStyle(.glass)
+            .disabled(true)
+            .accessibilityHint("This deal is already in your shopping list.")
+        } else {
+            Button {
+                addOfferToList(offer)
+            } label: {
+                Label("Add to list", systemImage: "plus")
+                    .breezeText(.bodyStrong, color: AppTheme.Colors.primaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .buttonStyle(.glassProminent)
+            .accessibilityHint("Add this deal to your shopping list.")
         }
-        .buttonStyle(.plain)
-        .breezeSurface(
-            fill: isAdded ? AppTheme.Colors.accentSoft : AppTheme.Colors.panelFill,
-            border: isAdded ? AppTheme.Colors.activeBorder : AppTheme.Colors.borderStrong,
-            radius: AppTheme.Radii.medium
-        )
-        .frame(maxWidth: .infinity, alignment: .center)
-        .disabled(isAdded)
-        .accessibilityHint(isAdded ? "This deal is already in your shopping list." : "Add this deal to your shopping list.")
     }
 
     private func infoRow(title: String, value: String, systemImage: String) -> some View {
@@ -768,14 +770,25 @@ struct StoreDetailView: View {
         }
     }
 
+    @ViewBuilder
     private func actionButton(title: String, variant: AppButtonVariant, url: URL?) -> some View {
-        Button(title) {
-            guard let url else { return }
-            openURL(url)
+        if variant == .primary {
+            Button(title) {
+                guard let url else { return }
+                openURL(url)
+            }
+            .buttonStyle(.glassProminent)
+            .disabled(url == nil)
+            .opacity(url == nil ? 0.56 : 1)
+        } else {
+            Button(title) {
+                guard let url else { return }
+                openURL(url)
+            }
+            .buttonStyle(.glass)
+            .disabled(url == nil)
+            .opacity(url == nil ? 0.56 : 1)
         }
-        .buttonStyle(AppButtonStyle(variant: variant))
-        .disabled(url == nil)
-        .opacity(url == nil ? 0.56 : 1)
     }
 
     private func loadOffers(force: Bool = false) async {
@@ -794,7 +807,7 @@ struct StoreDetailView: View {
             offers = try await appServices.deals.fetchStoreDeals(
                 companySlug: companySlug,
                 storeID: store.id,
-                query: StoreDealsQuery(limit: 20, offset: 0)
+                query: StoreDealsQuery(hydrateIfEmpty: true, limit: 20, offset: 0)
             )
             hasLoadedOffers = true
         } catch {

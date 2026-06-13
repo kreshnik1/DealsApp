@@ -58,15 +58,15 @@ enum AppTheme {
     }
 
     enum Typography {
-        static let hero = Font.system(size: 42, weight: .bold)
-        static let pageTitle = Font.system(size: 28, weight: .bold)
-        static let sectionTitle = Font.system(size: 20, weight: .semibold)
-        static let cardTitle = Font.system(size: 15, weight: .bold)
-        static let body = Font.system(size: 15, weight: .regular)
-        static let bodyEmphasis = Font.system(size: 15, weight: .semibold)
-        static let caption = Font.system(size: 10, weight: .semibold)
-        static let eyebrow = Font.system(size: 11, weight: .bold)
-        static let meta = Font.system(size: 11, weight: .regular)
+        static let hero = Font.system(size: 46, weight: .bold)
+        static let pageTitle = Font.system(size: 32, weight: .bold)
+        static let sectionTitle = Font.system(size: 22, weight: .bold)
+        static let cardTitle = Font.system(size: 17, weight: .bold)
+        static let body = Font.system(size: 17, weight: .regular)
+        static let bodyEmphasis = Font.system(size: 17, weight: .semibold)
+        static let caption = Font.system(size: 12, weight: .semibold)
+        static let eyebrow = Font.system(size: 12, weight: .bold)
+        static let meta = Font.system(size: 12, weight: .regular)
     }
 
     enum Shadows {

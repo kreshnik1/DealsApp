@@ -10,7 +10,7 @@ struct OnboardingFlowView: View {
 
     var body: some View {
         ZStack {
-            Color(uiColor: .systemBackground)
+            AppThemeBackground()
                 .ignoresSafeArea()
 
             TabView(selection: $currentStep) {
@@ -27,6 +27,7 @@ struct OnboardingFlowView: View {
                 OnboardingSubscriptionsView(
                     isActive: currentStep == 2,
                     address: selectedAddress,
+                    locationCoordinates: selectedLocationCoordinates,
                     selectedShopIDs: $selectedShopIDs
                 )
                 .tag(2)
@@ -69,6 +70,7 @@ struct OnboardingFlowView: View {
         switch currentStep {
         case 1:
             selectedAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || selectedLocationCoordinates == nil
         case 3:
             selectedWeeklyBudget == nil
         default:

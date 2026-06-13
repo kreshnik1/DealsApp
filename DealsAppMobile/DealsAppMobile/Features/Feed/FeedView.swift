@@ -7,20 +7,20 @@ struct FeedView: View {
     @State private var savedStores: [StoreDTO] = []
     @State private var isLoadingStores = false
     @State private var storeLoadError: String?
+    @State private var warmedStoreIDs = Set<Int>()
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
-                savedStoresSection
-//                supportingNote
+                storesContent
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, AppTheme.Spacing.screenInset)
-            .padding(.top, AppTheme.Spacing.xLarge)
-            .padding(.bottom, AppTheme.Spacing.xxLarge)
+            .padding(.top, AppTheme.Spacing.large)
+            .padding(.bottom, 120)
         }
-        .background(Color(uiColor: .systemBackground))
-        .navigationTitle("Breeze")
+        .breezeMainAppScreen()
+        .navigationTitle("Home")
         .navigationSubtitle(appState.savedAddress)
         .navigationBarTitleDisplayMode(.large)
         .toolbarTitleDisplayMode(.large)
@@ -29,35 +29,39 @@ struct FeedView: View {
                 NavigationLink {
                     SettingsView()
                 } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: AppTheme.IconSizes.toolbar, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                    Label("Settings", systemImage: "gearshape")
+                        .labelStyle(.iconOnly)
                 }
-                .accessibilityLabel("Settings")
             }
         }
         .task(id: appState.selectedStoreIDs) {
             await loadSavedStores()
         }
+        .task(id: savedStores.map(\.id)) {
+            await warmSubscribedStoreOffersIfNeeded()
+        }
     }
 
     @ViewBuilder
+    private var storesContent: some View {
+        if isLoadingStores && savedStores.isEmpty {
+            loadingCard
+        } else if let storeLoadError, savedStores.isEmpty {
+            errorCard(message: storeLoadError)
+        } else if savedStores.isEmpty {
+            emptyCard
+        } else {
+            savedStoresSection
+        }
+    }
+
     private var savedStoresSection: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.large) {
-            sectionHeader("Your Stores")
+            sectionHeader("Stores You Follow")
 
-            if isLoadingStores && savedStores.isEmpty {
-                loadingCard
-            } else if let storeLoadError, savedStores.isEmpty {
-                errorCard(message: storeLoadError)
-            } else if savedStores.isEmpty {
-                emptyCard
-            } else {
-                LazyVStack(spacing: AppTheme.Spacing.xLarge) {
-                    ForEach(savedStores) { store in
-                        FeedStoreOfferCard(store: store, companySlug: "coop")
-                    }
+            LazyVStack(spacing: AppTheme.Spacing.xLarge) {
+                ForEach(savedStores) { store in
+                    FeedStoreOfferCard(store: store, companySlug: companySlug(for: store))
                 }
             }
         }
@@ -71,17 +75,17 @@ struct FeedView: View {
             ProgressView()
                 .tint(AppTheme.Colors.accent)
 
-            Text("Fetching the saved Coop sample so the feed can render live store cards.")
+            Text("Fetching the stores you follow.")
                 .breezeText(.body, color: AppTheme.Colors.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(22)
-        .background(sectionPanel)
+        .breezeGlassPanel(.panel, cornerRadius: AppTheme.Radii.xLarge)
     }
 
     private func errorCard(message: String) -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.medium) {
-            Text("Could not load your saved stores.")
+            Text("Could not load your stores.")
                 .breezeText(.section)
 
             Text(message)
@@ -93,10 +97,10 @@ struct FeedView: View {
                     await loadSavedStores(force: true)
                 }
             }
-            .buttonStyle(AppButtonStyle(variant: .secondary, fillsWidth: false))
+            .buttonStyle(.glass)
         }
         .padding(22)
-        .background(sectionPanel)
+        .breezeGlassPanel(.panel, cornerRadius: AppTheme.Radii.xLarge)
     }
 
     private var emptyCard: some View {
@@ -104,52 +108,24 @@ struct FeedView: View {
             Text("No saved stores yet.")
                 .breezeText(.section)
 
-            Text("Finish onboarding with a few Coop stores selected and they will appear here as full feed cards.")
+            Text("Finish onboarding with a few stores selected and they will appear here.")
                 .breezeText(.body, color: AppTheme.Colors.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(22)
-        .background(sectionPanel)
-    }
-
-    private var supportingNote: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.small) {
-            sectionHeader("What Comes Next")
-
-            Text("This is the first store-focused feed module. Next we can tune the card composition, swap in real deal counts, or thread weekly offers directly into each store block.")
-                .breezeText(.body, color: AppTheme.Colors.secondaryText)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 2)
-    }
-
-    private var sectionPanel: some View {
-        RoundedRectangle(cornerRadius: AppTheme.Radii.xLarge, style: .continuous)
-            .fill(AppTheme.Colors.panelFill)
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radii.xLarge, style: .continuous)
-                    .strokeBorder(AppTheme.Colors.borderStrong, lineWidth: 1)
-            )
+        .breezeGlassPanel(.panel, cornerRadius: AppTheme.Radii.xLarge)
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        HStack(spacing: AppTheme.Spacing.small) {
-            Text(title)
-                .breezeText(.section, color: AppTheme.Colors.primaryText)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(AppTheme.Colors.primaryText.opacity(0.78))
-
-            Spacer(minLength: 0)
-        }
+        Text(title)
+            .breezeText(.section, color: AppTheme.Colors.primaryText)
     }
 
     private func loadSavedStores(force: Bool = false) async {
         guard appState.selectedStoreIDs.isEmpty == false else {
             savedStores = []
             storeLoadError = nil
+            warmedStoreIDs = []
             return
         }
 
@@ -165,18 +141,62 @@ struct FeedView: View {
         storeLoadError = nil
 
         do {
-            let allStores = try await appServices.stores.fetchCompanyStores(
-                companySlug: "coop",
-                query: CompanyStoresQuery(limit: 10)
-            )
+            let allStores = try await appServices.stores.fetchStores()
 
             let selectedIDs = appState.selectedStoreIDs
-            savedStores = allStores.filter { selectedIDs.contains(String($0.id)) }
+            let selectedOrder = Dictionary(
+                uniqueKeysWithValues: selectedIDs.enumerated().map { (offset: Int, id: String) in
+                    (id, offset)
+                }
+            )
+
+            savedStores = allStores
+                .filter { selectedIDs.contains(String($0.id)) }
+                .sorted { lhs, rhs in
+                    let lhsIndex = selectedOrder[String(lhs.id)] ?? .max
+                    let rhsIndex = selectedOrder[String(rhs.id)] ?? .max
+                    return lhsIndex < rhsIndex
+                }
         } catch {
             storeLoadError = error.localizedDescription
         }
 
         isLoadingStores = false
+    }
+
+    private func warmSubscribedStoreOffersIfNeeded() async {
+        guard savedStores.isEmpty == false else { return }
+
+        let storesToWarm = savedStores.filter { warmedStoreIDs.contains($0.id) == false }
+        guard storesToWarm.isEmpty == false else { return }
+
+        for store in storesToWarm {
+            let query = StoreDealsQuery(hydrateIfEmpty: true, limit: 20, offset: 0)
+            do {
+                _ = try await appServices.deals.fetchStoreDeals(
+                    companySlug: companySlug(for: store),
+                    storeID: store.id,
+                    query: query
+                )
+            } catch {
+                // Warm in the background; keep the home screen usable even if a scrape fails.
+            }
+
+            warmedStoreIDs.insert(store.id)
+        }
+    }
+
+    private func companySlug(for store: StoreDTO) -> String {
+        switch store.companyID {
+        case 1:
+            "coop"
+        case 2:
+            "ica"
+        case 3:
+            "lidl"
+        default:
+            "coop"
+        }
     }
 }
 

@@ -5,10 +5,12 @@ struct OnboardingSubscriptionsView: View {
 
     let isActive: Bool
     let address: String
+    let locationCoordinates: UserLocationCoordinates?
     @State private var showsText = false
     @State private var revealSequence = 0
+    @State private var revealTask: Task<Void, Never>?
     @State private var shopOptions: [OnboardingShopOption] = []
-    @State private var hasLoadedStores = false
+    @State private var loadedCoordinates: UserLocationCoordinates?
     @State private var isLoadingStores = false
     @State private var storeLoadError: String?
     @Binding var selectedShopIDs: Set<String>
@@ -54,10 +56,18 @@ struct OnboardingSubscriptionsView: View {
         .onChange(of: isActive, initial: false) { _, _ in
             runRevealSequence()
         }
-        .task(id: isActive) {
+        .task(id: loadTrigger) {
             guard isActive else { return }
-            await loadCoopStoresIfNeeded()
+            await loadNearbyStoresIfNeeded()
         }
+    }
+
+    private var loadTrigger: String {
+        guard let locationCoordinates else {
+            return "\(isActive)-missing"
+        }
+
+        return "\(isActive)-\(locationCoordinates.latitude)-\(locationCoordinates.longitude)"
     }
 
     private var subtitle: String {
@@ -66,18 +76,18 @@ struct OnboardingSubscriptionsView: View {
             return "Choose a few stores to start."
         }
 
-        return "Stores near \(trimmedAddress)"
+        return "Closest stores to \(trimmedAddress)"
     }
 
     @ViewBuilder
     private var content: some View {
         if isLoadingStores && shopOptions.isEmpty {
-            ProgressView("Loading Coop stores...")
+            ProgressView("Loading nearby stores...")
                 .breezeText(.body, color: AppTheme.Colors.secondaryText)
                 .padding(.vertical, AppTheme.Spacing.xxLarge)
         } else if let storeLoadError, shopOptions.isEmpty {
             VStack(spacing: AppTheme.Spacing.medium) {
-                Text("Could not load Coop stores.")
+                Text("Could not load nearby stores.")
                     .breezeText(.bodyStrong)
 
                 Text(storeLoadError)
@@ -86,7 +96,7 @@ struct OnboardingSubscriptionsView: View {
 
                 Button("Try Again") {
                     Task {
-                        await loadCoopStores(force: true)
+                        await loadNearbyStores(force: true)
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -95,7 +105,7 @@ struct OnboardingSubscriptionsView: View {
             .padding(.vertical, AppTheme.Spacing.xxLarge)
             .background(selectionCard(isSelected: false))
         } else if shopOptions.isEmpty {
-            Text("No Coop stores with details are available yet.")
+            Text("No nearby stores are available yet.")
                 .breezeText(.body, color: AppTheme.Colors.secondaryText)
                 .padding(.vertical, AppTheme.Spacing.xxLarge)
         } else {
@@ -144,6 +154,7 @@ struct OnboardingSubscriptionsView: View {
     private func runRevealSequence() {
         revealSequence += 1
         let sequence = revealSequence
+        revealTask?.cancel()
 
         guard isActive else {
             showsText = false
@@ -152,8 +163,9 @@ struct OnboardingSubscriptionsView: View {
 
         showsText = false
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard revealSequence == sequence, isActive else { return }
+        revealTask = Task {
+            try? await Task.sleep(for: .milliseconds(80))
+            guard Task.isCancelled == false, revealSequence == sequence, isActive else { return }
 
             withAnimation(.easeOut(duration: 0.62)) {
                 showsText = true
@@ -161,18 +173,24 @@ struct OnboardingSubscriptionsView: View {
         }
     }
 
-    private func loadCoopStoresIfNeeded() async {
-        guard hasLoadedStores == false else { return }
-        await loadCoopStores(force: false)
+    private func loadNearbyStoresIfNeeded() async {
+        await loadNearbyStores(force: false)
     }
 
-    private func loadCoopStores(force: Bool) async {
-        guard force || hasLoadedStores == false else { return }
+    private func loadNearbyStores(force: Bool) async {
+        guard let locationCoordinates else {
+            shopOptions = []
+            storeLoadError = nil
+            loadedCoordinates = nil
+            return
+        }
+
+        guard force || loadedCoordinates != locationCoordinates || shopOptions.isEmpty else { return }
         guard isLoadingStores == false else { return }
 
         if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
             shopOptions = OnboardingShopOption.previewSamples
-            hasLoadedStores = true
+            loadedCoordinates = locationCoordinates
             return
         }
 
@@ -180,21 +198,21 @@ struct OnboardingSubscriptionsView: View {
         storeLoadError = nil
 
         do {
-            let stores = try await appServices.stores.fetchCompanyStores(
-                companySlug: "coop",
-                query: CompanyStoresQuery(limit: 10)
+            let stores = try await appServices.stores.fetchNearbyStores(
+                NearbyStoresQuery(
+                    latitude: locationCoordinates.latitude,
+                    longitude: locationCoordinates.longitude,
+                    limit: 12
+                )
             )
 
             shopOptions = stores
                 .filter { $0.detail != nil }
-                .prefix(10)
+                .prefix(12)
                 .map(OnboardingShopOption.init(store:))
 
-            if selectedShopIDs.isEmpty {
-                selectedShopIDs = Set(shopOptions.prefix(3).map(\.id))
-            }
-
-            hasLoadedStores = true
+            selectedShopIDs.formIntersection(Set(shopOptions.map(\.id)))
+            loadedCoordinates = locationCoordinates
         } catch {
             storeLoadError = error.localizedDescription
         }
@@ -219,6 +237,7 @@ struct OnboardingSubscriptionsView: View {
     OnboardingSubscriptionsView(
         isActive: false,
         address: "Malmö, Sweden",
+        locationCoordinates: UserLocationCoordinates(latitude: 55.605, longitude: 13.0038),
         selectedShopIDs: .constant(Set(["1", "2"]))
     )
     .breezeScreen()

@@ -6,13 +6,16 @@ import UIKit
 @MainActor
 final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
-    @Published private(set) var isFetching = false
+    @Published private(set) var isFetchingCurrentLocation = false
+    @Published private(set) var isResolvingTypedAddress = false
     @Published private(set) var resolvedAddress: String?
     @Published private(set) var resolvedCoordinates: UserLocationCoordinates?
     @Published private(set) var errorMessage: String?
 
     private let manager: CLLocationManager
     private let geocoder = CLGeocoder()
+    private var activeResolutionID = UUID()
+    private var currentLocationRequestID: UUID?
 
     override init() {
         let manager = CLLocationManager()
@@ -27,12 +30,16 @@ final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationMan
         resolvedAddress?.isEmpty == false
     }
 
+    var isFetching: Bool {
+        isFetchingCurrentLocation || isResolvingTypedAddress
+    }
+
     var primaryButtonTitle: String {
         if isResolved {
             return "Location Added"
         }
 
-        if isFetching {
+        if isFetchingCurrentLocation {
             return "Finding You"
         }
 
@@ -58,8 +65,9 @@ final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationMan
     }
 
     func requestCurrentLocation() {
-        errorMessage = nil
-        isFetching = true
+        geocoder.cancelGeocode()
+        let requestID = beginResolution(kind: .currentLocation, clearsResolvedAddress: false)
+        currentLocationRequestID = requestID
 
         switch manager.authorizationStatus {
         case .notDetermined:
@@ -67,11 +75,57 @@ final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationMan
         case .authorizedWhenInUse, .authorizedAlways:
             manager.requestLocation()
         case .denied, .restricted:
-            isFetching = false
+            finishCurrentLocationResolution(requestID: requestID)
             openAppSettings()
         @unknown default:
-            isFetching = false
+            finishCurrentLocationResolution(requestID: requestID)
             errorMessage = "Location unavailable right now"
+        }
+    }
+
+    func prepareForManualAddressEntry() {
+        invalidateActiveResolution()
+        geocoder.cancelGeocode()
+        resolvedAddress = nil
+        resolvedCoordinates = nil
+        errorMessage = nil
+    }
+
+    func resolveTypedAddress(_ address: String) async -> UserLocationCoordinates? {
+        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedAddress.isEmpty == false else {
+            prepareForManualAddressEntry()
+            return nil
+        }
+
+        geocoder.cancelGeocode()
+        let requestID = beginResolution(kind: .typedAddress, clearsResolvedAddress: true)
+
+        do {
+            let placemarks = try await geocoder.geocodeAddressString(trimmedAddress)
+            guard isActive(requestID) else { return nil }
+
+            if let location = placemarks.first?.location?.coordinate {
+                let coordinates = UserLocationCoordinates(latitude: location.latitude, longitude: location.longitude)
+                resolvedCoordinates = coordinates
+                errorMessage = nil
+                finishTypedAddressResolution(requestID: requestID)
+                return coordinates
+            }
+
+            resolvedCoordinates = nil
+            errorMessage = "We couldn't verify that address"
+            finishTypedAddressResolution(requestID: requestID)
+            return nil
+        } catch is CancellationError {
+            finishTypedAddressResolution(requestID: requestID)
+            return nil
+        } catch {
+            guard isActive(requestID) else { return nil }
+            resolvedCoordinates = nil
+            errorMessage = "We couldn't verify that address"
+            finishTypedAddressResolution(requestID: requestID)
+            return nil
         }
     }
 
@@ -82,54 +136,111 @@ final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationMan
         case .authorizedAlways, .authorizedWhenInUse:
             manager.requestLocation()
         case .denied, .restricted:
-            isFetching = false
+            isFetchingCurrentLocation = false
             errorMessage = "Location access is off"
         case .notDetermined:
             break
         @unknown default:
-            isFetching = false
+            isFetchingCurrentLocation = false
             errorMessage = "Location unavailable right now"
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else {
-            isFetching = false
+            isFetchingCurrentLocation = false
             errorMessage = "Could not find your location"
             return
         }
 
-        geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, _ in
-            guard let self else { return }
-            Task { @MainActor in
-                self.isFetching = false
-
-                if let placemark = placemarks?.first,
-                   let address = self.compactAddress(from: placemark) {
-                    self.resolvedCoordinates = UserLocationCoordinates(
-                        latitude: location.coordinate.latitude,
-                        longitude: location.coordinate.longitude
-                    )
-                    self.resolvedAddress = address
-                    self.errorMessage = nil
-                } else {
-                    self.resolvedCoordinates = nil
-                    self.resolvedAddress = nil
-                    self.errorMessage = "Try typing your address instead"
-                }
-            }
+        guard let requestID = currentLocationRequestID else { return }
+        Task {
+            await resolveCurrentLocation(location, requestID: requestID)
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        isFetching = false
+        isFetchingCurrentLocation = false
+        currentLocationRequestID = nil
         resolvedCoordinates = nil
+        resolvedAddress = nil
         errorMessage = "Try typing your address instead"
     }
 
     private func openAppSettings() {
         guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(settingsURL)
+    }
+
+    private func beginResolution(kind: ResolutionKind, clearsResolvedAddress: Bool) -> UUID {
+        let requestID = UUID()
+        activeResolutionID = requestID
+
+        switch kind {
+        case .currentLocation:
+            isFetchingCurrentLocation = true
+            isResolvingTypedAddress = false
+        case .typedAddress:
+            isFetchingCurrentLocation = false
+            isResolvingTypedAddress = true
+        }
+
+        if clearsResolvedAddress {
+            resolvedAddress = nil
+        }
+
+        errorMessage = nil
+        return requestID
+    }
+
+    private func finishCurrentLocationResolution(requestID: UUID) {
+        guard isActive(requestID) else { return }
+        isFetchingCurrentLocation = false
+        currentLocationRequestID = nil
+    }
+
+    private func finishTypedAddressResolution(requestID: UUID) {
+        guard isActive(requestID) else { return }
+        isResolvingTypedAddress = false
+    }
+
+    private func invalidateActiveResolution() {
+        activeResolutionID = UUID()
+        currentLocationRequestID = nil
+        isFetchingCurrentLocation = false
+        isResolvingTypedAddress = false
+    }
+
+    private func isActive(_ requestID: UUID) -> Bool {
+        activeResolutionID == requestID
+    }
+
+    private func resolveCurrentLocation(_ location: CLLocation, requestID: UUID) async {
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            guard isActive(requestID) else { return }
+
+            if let placemark = placemarks.first,
+               let address = compactAddress(from: placemark) {
+                resolvedCoordinates = UserLocationCoordinates(
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude
+                )
+                resolvedAddress = address
+                errorMessage = nil
+            } else {
+                resolvedCoordinates = nil
+                resolvedAddress = nil
+                errorMessage = "Try typing your address instead"
+            }
+        } catch {
+            guard isActive(requestID) else { return }
+            resolvedCoordinates = nil
+            resolvedAddress = nil
+            errorMessage = "Try typing your address instead"
+        }
+
+        finishCurrentLocationResolution(requestID: requestID)
     }
 
     private func compactAddress(from placemark: CLPlacemark) -> String? {
@@ -151,5 +262,12 @@ final class OnboardingLocationManager: NSObject, ObservableObject, CLLocationMan
 
         let address = parts.joined(separator: ", ").trimmingCharacters(in: .whitespacesAndNewlines)
         return address.isEmpty ? nil : address
+    }
+}
+
+private extension OnboardingLocationManager {
+    enum ResolutionKind {
+        case currentLocation
+        case typedAddress
     }
 }

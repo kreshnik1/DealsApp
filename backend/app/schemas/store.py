@@ -44,6 +44,7 @@ class StoreOut(BaseModel):
     external_id: str | None
     store_url: str | None = None
     weekly_deals_url: str | None = None
+    distance_km: float | None = None
     detail: StoreDetailOut | None = None
 
     model_config = {"from_attributes": True}

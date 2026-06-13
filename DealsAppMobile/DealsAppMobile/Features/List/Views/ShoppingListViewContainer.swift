@@ -13,7 +13,6 @@ struct ShoppingListViewContainer: View {
 
     @State private var viewModel: ShoppingListViewModel
     @State private var editingItem: ShoppingListItem?
-    @State private var isCheckedSectionExpanded = false
     @State private var presentedErrorMessage: String?
 
     init(context: ModelContext) {
@@ -31,7 +30,7 @@ struct ShoppingListViewContainer: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                         if activeItems.isEmpty == false {
-                            LazyVStack(spacing: AppTheme.Spacing.medium) {
+                            LazyVStack(spacing: AppTheme.Spacing.small) {
                                 ForEach(activeItems) { item in
                                     ShoppingListRowView(
                                         item: item,
@@ -52,48 +51,6 @@ struct ShoppingListViewContainer: View {
                                 }
                             }
                         }
-
-                        if checkedItems.isEmpty == false {
-                            VStack(alignment: .leading, spacing: AppTheme.Spacing.medium) {
-                                Button(action: toggleCheckedSection) {
-                                    HStack(spacing: AppTheme.Spacing.small) {
-                                        Image(systemName: isCheckedSectionExpanded ? "chevron.down" : "chevron.right")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(AppTheme.Colors.secondaryText)
-
-                                        Text("Purchased · \(checkedItems.count)")
-                                            .breezeText(.bodyStrong)
-
-                                        Spacer(minLength: 0)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-
-                                if isCheckedSectionExpanded {
-                                    LazyVStack(spacing: AppTheme.Spacing.medium) {
-                                        ForEach(checkedItems) { item in
-                                            ShoppingListRowView(
-                                                item: item,
-                                                onToggleChecked: {
-                                                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
-                                                        viewModel.toggleChecked(for: item)
-                                                    }
-                                                },
-                                                onEdit: {
-                                                    editingItem = item
-                                                },
-                                                onDelete: {
-                                                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
-                                                        viewModel.deleteItem(item)
-                                                    }
-                                                }
-                                            )
-                                        }
-                                    }
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
-                                }
-                            }
-                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, AppTheme.Spacing.screenInset)
@@ -102,7 +59,7 @@ struct ShoppingListViewContainer: View {
                 }
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .breezeMainAppScreen()
         .navigationTitle("Shopping List")
         .navigationSubtitle(appState.savedAddress)
         .navigationBarTitleDisplayMode(.large)
@@ -174,31 +131,10 @@ struct ShoppingListViewContainer: View {
     }
 
     private var showsEmptyState: Bool {
-        activeItems.isEmpty && checkedItems.isEmpty
+        activeItems.isEmpty
     }
 
     private var activeItems: [ShoppingListItem] {
         allItems.filter { $0.isChecked == false }
-    }
-
-    private var checkedItems: [ShoppingListItem] {
-        allItems
-            .filter(\.isChecked)
-            .sorted {
-                let lhs = $0.checkedAt ?? .distantPast
-                let rhs = $1.checkedAt ?? .distantPast
-
-                if lhs != rhs {
-                    return lhs > rhs
-                }
-
-                return $0.updatedAt > $1.updatedAt
-            }
-    }
-
-    private func toggleCheckedSection() {
-        withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
-            isCheckedSectionExpanded.toggle()
-        }
     }
 }

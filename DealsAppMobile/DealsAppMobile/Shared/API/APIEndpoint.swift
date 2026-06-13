@@ -6,6 +6,7 @@ enum APIEndpoint {
     case listStoreDeals(companySlug: String, storeID: Int, query: StoreDealsQuery)
     case getDeal(id: Int)
     case listStores(StoresQuery)
+    case listNearbyStores(NearbyStoresQuery)
     case listCompanyStores(companySlug: String, query: CompanyStoresQuery)
     case listFlyers(FlyersQuery)
     case listStoreFlyers(companySlug: String, storeID: Int, query: StoreFlyersQuery)
@@ -49,6 +50,8 @@ enum APIEndpoint {
             return "deals/by-id/\(id)"
         case .listStores:
             return "stores/"
+        case .listNearbyStores:
+            return "stores/nearby"
         case let .listCompanyStores(companySlug, _):
             return "stores/\(companySlug)"
         case .listFlyers:
@@ -82,6 +85,7 @@ enum APIEndpoint {
             items = [
                 queryItem(named: "search", value: query.search),
                 queryItem(named: "category", value: query.category),
+                queryItem(named: "hydrate_if_empty", value: query.hydrateIfEmpty),
                 queryItem(named: "limit", value: query.limit),
                 queryItem(named: "offset", value: query.offset)
             ]
@@ -90,6 +94,12 @@ enum APIEndpoint {
         case let .listStores(query):
             items = [
                 queryItem(named: "chain", value: query.chain)
+            ]
+        case let .listNearbyStores(query):
+            items = [
+                queryItem(named: "latitude", value: query.latitude),
+                queryItem(named: "longitude", value: query.longitude),
+                queryItem(named: "limit", value: query.limit)
             ]
         case let .listCompanyStores(_, query):
             items = [
@@ -129,5 +139,13 @@ enum APIEndpoint {
         }
 
         return URLQueryItem(name: name, value: String(value))
+    }
+
+    private func queryItem(named name: String, value: Double) -> URLQueryItem? {
+        URLQueryItem(name: name, value: String(value))
+    }
+
+    private func queryItem(named name: String, value: Bool) -> URLQueryItem? {
+        URLQueryItem(name: name, value: value ? "true" : "false")
     }
 }

@@ -14,10 +14,9 @@ struct InventoryRowView: View {
                 .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(AppTheme.Colors.accentStrong)
                 .frame(width: 34, height: 34)
-                .breezeSurface(
-                    fill: AppTheme.Colors.accentSoft2,
-                    border: AppTheme.Colors.activeBorder,
-                    radius: AppTheme.Radii.phone
+                .background(
+                    Circle()
+                        .fill(AppTheme.Colors.accentSoft2)
                 )
 
             VStack(alignment: .leading, spacing: AppTheme.Spacing.small) {
@@ -44,19 +43,16 @@ struct InventoryRowView: View {
                 Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.Colors.secondaryText)
                     .frame(width: 34, height: 34)
-                    .breezeSurface(
-                        fill: AppTheme.Colors.panelFillStrong,
-                        border: AppTheme.Colors.borderStrong,
-                        radius: AppTheme.Radii.phone
-                    )
             }
+            .buttonStyle(.glass)
             .accessibilityLabel("Inventory item actions")
         }
-        .padding(18)
-        .breezeGlassPanel(.panel, cornerRadius: AppTheme.Radii.large)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .background(rowBackground)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Finish", action: onFinish)
                 .tint(.green)
@@ -83,5 +79,18 @@ struct InventoryRowView: View {
         }
 
         return parts.joined(separator: " · ")
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+            .fill(AppTheme.Colors.panelFill.opacity(0.72))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .glassEffect(
+                Glass.regular.tint(AppTheme.Colors.panelFillMuted.opacity(0.12)),
+                in: RoundedRectangle(cornerRadius: AppTheme.Radii.medium, style: .continuous)
+            )
     }
 }
