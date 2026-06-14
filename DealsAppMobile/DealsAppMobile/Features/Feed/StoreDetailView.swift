@@ -992,6 +992,7 @@ private nonisolated func safeURL(from value: String?) -> URL? {
                 externalID: "coop:coop:coop-aby",
                 storeURL: "https://www.coop.se/butiker-erbjudanden/coop/coop-aby/om-butiken/",
                 weeklyDealsURL: nil,
+                distanceKM: 1.1,
                 detail: StoreDetailDTO(
                     id: 1,
                     storeID: 1,

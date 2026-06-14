@@ -232,6 +232,7 @@ private extension DateFormatter {
             externalID: "coop:coop:coop-aby",
             storeURL: nil,
             weeklyDealsURL: nil,
+            distanceKM: 1.1,
             detail: StoreDetailDTO(
                 id: 1,
                 storeID: 1,

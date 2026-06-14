@@ -8,7 +8,7 @@ struct StoreDTO: Decodable, Identifiable, Sendable {
     let externalID: String?
     let storeURL: String?
     let weeklyDealsURL: String?
-    let distanceKM: Double? = nil
+    let distanceKM: Double?
     let detail: StoreDetailDTO?
 
     enum CodingKeys: String, CodingKey {
