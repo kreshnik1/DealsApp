@@ -1,7 +1,7 @@
 """add auth identities and household tables
 
 Revision ID: 20260613_0003
-Revises: 20260520_0002
+Revises: 20260612_0003
 Create Date: 2026-06-13 12:00:00
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260613_0003"
-down_revision = "20260520_0002"
+down_revision = "20260612_0003"
 branch_labels = None
 depends_on = None
 
