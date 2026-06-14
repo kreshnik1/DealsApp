@@ -12,6 +12,13 @@ venv/
 .vscode/
 .idea/
 
+# Xcode (per-user state — never commit)
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+DerivedData/
+build/
+
 # Claude
 .claude/
 
